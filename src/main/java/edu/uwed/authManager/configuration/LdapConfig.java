@@ -33,21 +33,18 @@ public class LdapConfig {
     }
 
     @Bean
-    public SslContext dc01LdapProxySslContext() throws Exception {
+    public SslContext ldapProxySslContext() throws Exception {
         SslBundle sslBundle = sslBundles.getBundle("dc01LdapProxy");
 
-        // Создаём KeyManagerFactory из KeyStore
         KeyStore keyStore = sslBundle.getStores().getKeyStore();
-        String keyPassword = sslBundle.getKey().getPassword(); // Может быть null, если пароль не задан
+        String keyPassword = sslBundle.getKey().getPassword();
         KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         keyManagerFactory.init(keyStore, keyPassword != null ? keyPassword.toCharArray() : null);
 
-        // Создаём TrustManagerFactory из TrustStore
         KeyStore trustStore = sslBundle.getStores().getTrustStore();
         TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         trustManagerFactory.init(trustStore);
 
-        // Строим SslContext для Netty
         return SslContextBuilder
                 .forServer(keyManagerFactory)
                 .trustManager(trustManagerFactory)

@@ -22,9 +22,7 @@ public class LdapProxyServer {
     private static final Logger logger = LoggerFactory.getLogger(LdapProxyServer.class);
 
     // bean to autowire by the constructor
-    private final SslBundles sslBundles;
-
-    private final ConfigProperties configProperties;
+    private final ConfigProperties.ProxyConfig proxyConfig;
     private final LdapRequestHandler ldapRequestHandler;
     private final SslContext sslContext;
 
@@ -34,15 +32,9 @@ public class LdapProxyServer {
     private Channel ldapsChannel;
 
     @Autowired
-    public LdapProxyServer(
-            ConfigProperties configProperties,
-            LdapRequestHandler ldapRequestHandler,
-            SslBundles sslBundles,
-            @Qualifier("dc01LdapProxySslContext") SslContext sslContext
-    ) {
-        this.configProperties = configProperties;
+    public LdapProxyServer(ConfigProperties configProperties, LdapRequestHandler ldapRequestHandler, @Qualifier("ldapProxySslContext") SslContext sslContext) {
+        this.proxyConfig = configProperties.getProxyConfig();
         this.ldapRequestHandler = ldapRequestHandler;
-        this.sslBundles = sslBundles;
         this.sslContext = sslContext;
     }
 
@@ -50,9 +42,9 @@ public class LdapProxyServer {
     public void start() throws InterruptedException {
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
-        int ldapPort = configProperties.getProxyConfig().getPort().getLdap();
-        int ldapsPort = configProperties.getProxyConfig().getPort().getLdaps();
-        long maxMessageSize = configProperties.getProxyConfig().getMaxMessageSize();
+        int ldapPort = proxyConfig.getPort().getLdap();
+        int ldapsPort = proxyConfig.getPort().getLdaps();
+        long maxMessageSize = proxyConfig.getMaxMessageSize();
 
         ServerBootstrap ldapBootstrap = new ServerBootstrap();
         ldapBootstrap.group(bossGroup, workerGroup)

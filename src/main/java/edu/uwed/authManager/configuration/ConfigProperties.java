@@ -72,6 +72,7 @@ public class ConfigProperties {
         private boolean startTlsRequired;
         private boolean ignoreSslVerification;
         private String referralHandling;
+        private String sslBundle;
     }
 
     @Data

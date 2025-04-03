@@ -33,9 +33,8 @@ public class LdapConfig {
     }
 
     @Bean
-    public SslContext ldapProxySslContext() throws Exception {
-        SslBundle sslBundle = sslBundles.getBundle("dc01LdapProxy");
-
+    public SslContext LdapSslContext() throws Exception {
+        SslBundle sslBundle = sslBundles.getBundle("ldaps");
         KeyStore keyStore = sslBundle.getStores().getKeyStore();
         String keyPassword = sslBundle.getKey().getPassword();
         KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
@@ -44,11 +43,40 @@ public class LdapConfig {
         KeyStore trustStore = sslBundle.getStores().getTrustStore();
         TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         trustManagerFactory.init(trustStore);
-
         return SslContextBuilder
                 .forServer(keyManagerFactory)
                 .trustManager(trustManagerFactory)
                 .build();
+    }
+
+    @Bean
+    public Map<String, SslContext> ldapProxySslContexts() throws Exception {
+        Map<String, SslContext> sslContexts = new HashMap<>();
+
+        // Проходим по всем серверам из ConfigProperties
+        Map<String, ConfigProperties.LdapServerConfig> servers = configProperties.getLdapServerConfigs();
+        for (String serverName : servers.keySet()) {
+            String bundleName = servers.get(serverName).getSslBundle();
+            SslBundle sslBundle = sslBundles.getBundle(bundleName);
+
+            KeyStore keyStore = sslBundle.getStores().getKeyStore();
+            String keyPassword = sslBundle.getKey().getPassword();
+            KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            keyManagerFactory.init(keyStore, keyPassword != null ? keyPassword.toCharArray() : null);
+
+            KeyStore trustStore = sslBundle.getStores().getTrustStore();
+            TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            trustManagerFactory.init(trustStore);
+
+            SslContext sslContext = SslContextBuilder
+                    .forServer(keyManagerFactory)
+                    .trustManager(trustManagerFactory)
+                    .build();
+
+            sslContexts.put(serverName, sslContext); // Ключ — имя сервера ("dc-01", "dc-02")
+        }
+
+        return sslContexts;
     }
 
     @Bean

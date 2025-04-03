@@ -32,7 +32,11 @@ public class LdapProxyServer {
     private Channel ldapsChannel;
 
     @Autowired
-    public LdapProxyServer(ConfigProperties configProperties, LdapRequestHandler ldapRequestHandler, @Qualifier("ldapProxySslContext") SslContext sslContext) {
+    public LdapProxyServer(
+        ConfigProperties configProperties,
+        LdapRequestHandler ldapRequestHandler,
+        SslContext sslContext
+    ) {
         this.proxyConfig = configProperties.getProxyConfig();
         this.ldapRequestHandler = ldapRequestHandler;
         this.sslContext = sslContext;

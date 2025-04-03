@@ -14,7 +14,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.ssl.SslBundle;
 import org.springframework.boot.ssl.SslBundles;
+import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.Map;
 
 @Component
 public class LdapProxyServer {
@@ -22,7 +26,8 @@ public class LdapProxyServer {
     private static final Logger logger = LoggerFactory.getLogger(LdapProxyServer.class);
 
     // bean to autowire by the constructor
-    private final ConfigProperties.ProxyConfig proxyConfig;
+    //private final ConfigProperties.ProxyConfig proxyConfig;
+    private final ConfigProperties configProperties;
     private final LdapRequestHandler ldapRequestHandler;
     private final SslContext sslContext;
 
@@ -33,17 +38,19 @@ public class LdapProxyServer {
 
     @Autowired
     public LdapProxyServer(
-        ConfigProperties configProperties,
-        LdapRequestHandler ldapRequestHandler,
-        SslContext sslContext
+            ConfigProperties configProperties,
+            LdapRequestHandler ldapRequestHandler,
+            SslContext sslContext
     ) {
-        this.proxyConfig = configProperties.getProxyConfig();
+        this.configProperties = configProperties;
+        //this.proxyConfig = configProperties.getProxyConfig();
         this.ldapRequestHandler = ldapRequestHandler;
         this.sslContext = sslContext;
     }
 
     @PostConstruct
     public void start() throws InterruptedException {
+        ConfigProperties.ProxyConfig proxyConfig = configProperties.getProxyConfig();
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
         int ldapPort = proxyConfig.getPort().getLdap();
@@ -68,6 +75,26 @@ public class LdapProxyServer {
         ldapsChannel = ldapsBootstrap.bind(ldapsPort).sync().channel();
         logger.info("Started LDAP on port {} and LDAPS on port {}", ldapPort, ldapsPort);
     }
+
+//    @Bean
+//    public Map<String, LdapRequestHandler> ldapRequestHandlers(
+//        Map<String, SslContext> ldapProxyOutgoingSslContexts
+//    ) {
+//        Map<String, LdapRequestHandler> handlers = new HashMap<>();
+//        Map<String, ConfigProperties.LdapServerConfig> servers = configProperties.getLdapServerConfigs();
+//
+//        for (String serverName : servers.keySet()) {
+//            ConfigProperties.LdapServerConfig serverConfig = servers.get(serverName);
+//            SslContext sslContext = ldapProxyOutgoingSslContexts.get(serverName);
+//            if (sslContext == null) {
+//                logger.warn("No SslContext found for server: {}", serverName);
+//                continue;
+//            }
+//            handlers.put(serverName, new LdapRequestHandler(serverConfig, sslContext));
+//        }
+//
+//        return handlers;
+//    }
 
     @PreDestroy
     public void stop() {

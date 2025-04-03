@@ -1,5 +1,6 @@
 package edu.uwed.authManager.configuration;
 
+import edu.uwed.authManager.ldap.LdapRequestHandler;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import lombok.RequiredArgsConstructor;
@@ -17,6 +18,10 @@ import javax.net.ssl.TrustManagerFactory;
 import java.security.KeyStore;
 import java.util.HashMap;
 import java.util.Map;
+
+import edu.uwed.authManager.ldap.LdapRequestHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Configuration
 //@RequiredArgsConstructor
@@ -124,5 +129,10 @@ public class LdapConfig {
             templates.put(serverName, new LdapTemplate(contextSource));
         }
         return templates;
+    }
+
+    @Bean(name = "dc-01")
+    public ConfigProperties.LdapServerConfig dc01ServerConfig() {
+        return configProperties.getLdapServerConfigs().get("dc-01");
     }
 }

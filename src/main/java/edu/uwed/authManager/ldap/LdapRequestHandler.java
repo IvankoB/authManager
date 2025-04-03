@@ -19,16 +19,23 @@ import java.util.Map;
 public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     // Beans to autowire by the constructor
-    private final SslContext clientSslContext;
     private final ConfigProperties configProperties;
+    private final SslContext clientSslContext;
+    private final Map<String, SslContext> proxySslContexts;
     private final Map<String, LdapTemplate> ldapTemplates;
 
     private Channel outboundChannel;
     private static final Logger logger = LoggerFactory.getLogger(LdapRequestHandler.class);
 
     @Autowired
-    public LdapRequestHandler(SslContext clientSslContext, ConfigProperties configProperties, Map<String, LdapTemplate> ldapTemplates) {
+    public LdapRequestHandler(
+            ConfigProperties configProperties,
+            SslContext clientSslContext,
+            Map<String, LdapTemplate> ldapTemplates,
+            Map<String, SslContext> proxySslContexts
+    ) {
         this.clientSslContext = clientSslContext;
+        this.proxySslContexts = proxySslContexts;
         this.configProperties = configProperties;
         this.ldapTemplates = ldapTemplates;
     }

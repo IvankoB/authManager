@@ -1,25 +1,63 @@
 package edu.uwed.authManager.configuration;
 
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.ssl.SslBundle;
+import org.springframework.boot.ssl.SslBundles;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.ldap.core.support.LdapContextSource;
 import org.springframework.ldap.core.LdapTemplate;
 
 import javax.naming.Context;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.TrustManagerFactory;
+import java.security.KeyStore;
 import java.util.HashMap;
 import java.util.Map;
 
 @Configuration
-@RequiredArgsConstructor
+//@RequiredArgsConstructor
 public class LdapConfig {
 
+    // beans to autowire by the @RequiredArgs-ed Constructor
+    private final SslBundles sslBundles;
     private final ConfigProperties configProperties;
+
+    @Autowired
+    public LdapConfig(SslBundles sslBundles, ConfigProperties configProperties) {
+        this.sslBundles = sslBundles;
+        this.configProperties = configProperties;
+    }
+
+    @Bean
+    public SslContext dc01LdapProxySslContext() throws Exception {
+        SslBundle sslBundle = sslBundles.getBundle("dc01LdapProxy");
+
+        // Создаём KeyManagerFactory из KeyStore
+        KeyStore keyStore = sslBundle.getStores().getKeyStore();
+        String keyPassword = sslBundle.getKey().getPassword(); // Может быть null, если пароль не задан
+        KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        keyManagerFactory.init(keyStore, keyPassword != null ? keyPassword.toCharArray() : null);
+
+        // Создаём TrustManagerFactory из TrustStore
+        KeyStore trustStore = sslBundle.getStores().getTrustStore();
+        TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        trustManagerFactory.init(trustStore);
+
+        // Строим SslContext для Netty
+        return SslContextBuilder
+                .forServer(keyManagerFactory)
+                .trustManager(trustManagerFactory)
+                .build();
+    }
 
     @Bean
     public Map<String, LdapTemplate> ldapTemplates() throws Exception {
         Map<String, LdapTemplate> templates = new HashMap<>();
-        for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServers().entrySet()) {
+        for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
             String serverName = entry.getKey();
             ConfigProperties.LdapServerConfig config = entry.getValue();
 

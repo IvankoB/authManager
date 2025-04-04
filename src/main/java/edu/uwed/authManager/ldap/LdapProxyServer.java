@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.ssl.SslBundle;
 import org.springframework.boot.ssl.SslBundles;
 import org.springframework.context.annotation.Bean;
+import org.springframework.ldap.core.LdapTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
@@ -25,11 +26,10 @@ public class LdapProxyServer {
 
     private static final Logger logger = LoggerFactory.getLogger(LdapProxyServer.class);
 
-    // bean to autowire by the constructor
-    //private final ConfigProperties.ProxyConfig proxyConfig;
     private final ConfigProperties configProperties;
-    private final LdapRequestHandler ldapRequestHandler;
     private final SslContext sslContext;
+    private final Map<String, LdapTemplate> ldapTemplates;
+    private final Map<String, SslContext> proxySslContexts;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -39,20 +39,21 @@ public class LdapProxyServer {
     @Autowired
     public LdapProxyServer(
             ConfigProperties configProperties,
-            LdapRequestHandler ldapRequestHandler,
-            SslContext sslContext
+            @Qualifier("ldaps") SslContext sslContext,
+            Map<String, LdapTemplate> ldapTemplates,
+            Map<String, SslContext> proxySslContexts
     ) {
         this.configProperties = configProperties;
-        //this.proxyConfig = configProperties.getProxyConfig();
-        this.ldapRequestHandler = ldapRequestHandler;
         this.sslContext = sslContext;
+        this.ldapTemplates = ldapTemplates;
+        this.proxySslContexts = proxySslContexts;
     }
 
     @PostConstruct
-    public void start() throws InterruptedException {
-        ConfigProperties.ProxyConfig proxyConfig = configProperties.getProxyConfig();
+    public void start() throws Exception {
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
+        ConfigProperties.ProxyConfig proxyConfig = configProperties.getProxyConfig();
         int ldapPort = proxyConfig.getPort().getLdap();
         int ldapsPort = proxyConfig.getPort().getLdaps();
         long maxMessageSize = proxyConfig.getMaxMessageSize();
@@ -60,14 +61,14 @@ public class LdapProxyServer {
         ServerBootstrap ldapBootstrap = new ServerBootstrap();
         ldapBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
-                .childHandler(new LdapServerInitializer(ldapRequestHandler, sslContext, false, maxMessageSize))
+                .childHandler(new LdapServerInitializer(configProperties, sslContext, ldapTemplates, proxySslContexts, false, maxMessageSize))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);
 
         ServerBootstrap ldapsBootstrap = new ServerBootstrap();
         ldapsBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
-                .childHandler(new LdapServerInitializer(ldapRequestHandler, sslContext, true, maxMessageSize))
+                .childHandler(new LdapServerInitializer(configProperties, sslContext, ldapTemplates, proxySslContexts, true, maxMessageSize))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);
 
@@ -75,26 +76,6 @@ public class LdapProxyServer {
         ldapsChannel = ldapsBootstrap.bind(ldapsPort).sync().channel();
         logger.info("Started LDAP on port {} and LDAPS on port {}", ldapPort, ldapsPort);
     }
-
-//    @Bean
-//    public Map<String, LdapRequestHandler> ldapRequestHandlers(
-//        Map<String, SslContext> ldapProxyOutgoingSslContexts
-//    ) {
-//        Map<String, LdapRequestHandler> handlers = new HashMap<>();
-//        Map<String, ConfigProperties.LdapServerConfig> servers = configProperties.getLdapServerConfigs();
-//
-//        for (String serverName : servers.keySet()) {
-//            ConfigProperties.LdapServerConfig serverConfig = servers.get(serverName);
-//            SslContext sslContext = ldapProxyOutgoingSslContexts.get(serverName);
-//            if (sslContext == null) {
-//                logger.warn("No SslContext found for server: {}", serverName);
-//                continue;
-//            }
-//            handlers.put(serverName, new LdapRequestHandler(serverConfig, sslContext));
-//        }
-//
-//        return handlers;
-//    }
 
     @PreDestroy
     public void stop() {

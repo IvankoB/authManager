@@ -1,31 +1,49 @@
 package edu.uwed.authManager.ldap;
 
+import edu.uwed.authManager.configuration.ConfigProperties;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
+import org.springframework.ldap.core.LdapTemplate;
+
+import java.util.Map;
 
 public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
 
-    private final LdapRequestHandler ldapRequestHandler;
+    private final ConfigProperties configProperties;
     private final SslContext sslContext;
-    private final boolean isLdaps;
+    private final Map<String, LdapTemplate> ldapTemplates;
+    private final Map<String, SslContext> proxySslContexts;
+    private final boolean useSsl;
     private final long maxMessageSize;
 
-    public LdapServerInitializer(LdapRequestHandler ldapRequestHandler, SslContext sslContext, boolean isLdaps, long maxMessageSize) {
-        this.ldapRequestHandler = ldapRequestHandler;
+    public LdapServerInitializer(
+            ConfigProperties configProperties,
+            SslContext sslContext,
+            Map<String, LdapTemplate> ldapTemplates,
+            Map<String, SslContext> proxySslContexts,
+            boolean useSsl,
+            long maxMessageSize
+    ) {
+        this.configProperties = configProperties;
         this.sslContext = sslContext;
-        this.isLdaps = isLdaps;
+        this.ldapTemplates = ldapTemplates;
+        this.proxySslContexts = proxySslContexts;
+        this.useSsl = useSsl;
         this.maxMessageSize = maxMessageSize;
     }
 
     @Override
     protected void initChannel(SocketChannel ch) {
-        if (isLdaps) {
-            SslHandler sslHandler = sslContext.newHandler(ch.alloc());
-            ch.pipeline().addLast(sslHandler);
+        ChannelPipeline pipeline = ch.pipeline();
+        if (useSsl) {
+            pipeline.addLast(sslContext.newHandler(ch.alloc()));
         }
-        ch.pipeline().addLast(new LdapMessageDecoder(maxMessageSize));
-        ch.pipeline().addLast(ldapRequestHandler);
+        pipeline.addLast(new LdapRequestHandler(configProperties, sslContext, ldapTemplates, proxySslContexts));
     }
+
+
 }

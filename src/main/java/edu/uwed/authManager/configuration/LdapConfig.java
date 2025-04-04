@@ -37,8 +37,8 @@ public class LdapConfig {
         this.configProperties = configProperties;
     }
 
-    @Bean
-    public SslContext LdapSslContext() throws Exception {
+    @Bean(name = "ldaps") // Переименовали
+    public SslContext ldaps() throws Exception {
         SslBundle sslBundle = sslBundles.getBundle("ldaps");
         KeyStore keyStore = sslBundle.getStores().getKeyStore();
         String keyPassword = sslBundle.getKey().getPassword();

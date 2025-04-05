@@ -81,6 +81,13 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     private void handleStartTls(ChannelHandlerContext ctx, int messageId) throws Exception {
+        logger.debug("Handling StartTLS request");
+
+        // Сначала отправляем StartTLS-ответ
+        logger.debug("Sending StartTLS response before adding SslHandler");
+        sendStartTlsResponse(ctx, messageId);
+
+        // После отправки ответа добавляем SslHandler
         logger.debug("Adding SslHandler with Java SSLContext for StartTLS");
         SSLEngine sslEngine = startTlsSslContext.createSSLEngine();
         sslEngine.setUseClientMode(false);
@@ -92,10 +99,6 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         SslHandler sslHandler = new SslHandler(sslEngine);
         sslHandler.setHandshakeTimeout(30000, TimeUnit.MILLISECONDS);
         ctx.pipeline().addFirst("ssl", sslHandler);
-
-        // Отправляем StartTLS-ответ сразу
-        logger.debug("Sending StartTLS response before handshake");
-        sendStartTlsResponse(ctx, messageId);
 
         // Отслеживаем handshake
         sslHandler.handshakeFuture().addListener(future -> {

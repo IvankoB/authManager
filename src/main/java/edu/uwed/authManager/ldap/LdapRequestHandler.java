@@ -7,7 +7,6 @@ import com.unboundid.ldap.protocol.LDAPMessage;
 import com.unboundid.ldap.protocol.SearchRequestProtocolOp;
 import com.unboundid.ldap.sdk.LDAPResult;
 import com.unboundid.ldap.sdk.ResultCode;
-import com.unboundid.ldap.sdk.unboundidds.tools.LDAPResultCode;
 import com.unboundid.util.ByteStringBuffer;
 import edu.uwed.authManager.configuration.ConfigProperties;
 import io.netty.bootstrap.Bootstrap;
@@ -19,37 +18,44 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ldap.core.LdapTemplate;
-import org.springframework.stereotype.Service;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
 import java.io.ByteArrayInputStream;
+import java.util.Arrays;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
-    // Beans to autowire by the constructor
     private final ConfigProperties configProperties;
     private final SslContext clientSslContext;
-    private final Map<String, SslContext> proxySslContexts;
+    private final SSLContext startTlsSslContext;
     private final Map<String, LdapTemplate> ldapTemplates;
+    private final Map<String, SslContext> proxySslContexts;
+    private final Map<String, SSLContext> outgoingSslContexts;
 
     private Channel outboundChannel;
     private String targetServer;
     private static final Logger logger = LoggerFactory.getLogger(LdapRequestHandler.class);
-
     private static final String START_TLS_OID = "1.3.6.1.4.1.1466.20037";
 
     public LdapRequestHandler(
             ConfigProperties configProperties,
-            SslContext clientSslContext,
+            @Qualifier("ldaps") SslContext clientSslContext,
             Map<String, LdapTemplate> ldapTemplates,
-            Map<String, SslContext> proxySslContexts
+            Map<String, SslContext> proxySslContexts,
+            @Qualifier("startTlsSslContext") SSLContext startTlsSslContext,
+            Map<String, SSLContext> outgoingSslContexts
     ) {
-        this.clientSslContext = clientSslContext;
-        this.proxySslContexts = proxySslContexts;
         this.configProperties = configProperties;
+        this.clientSslContext = clientSslContext;
         this.ldapTemplates = ldapTemplates;
+        this.proxySslContexts = proxySslContexts;
+        this.startTlsSslContext = startTlsSslContext;
+        this.outgoingSslContexts = outgoingSslContexts;
     }
 
     private void sendStartTlsResponse(ChannelHandlerContext ctx, int messageId) {
@@ -67,7 +73,6 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         ctx.writeAndFlush(responseBuf).addListener(future -> {
             if (future.isSuccess()) {
                 logger.debug("StartTLS response sent successfully");
-                logger.info("StartTLS established with client");
             } else {
                 logger.error("Failed to send StartTLS response", future.cause());
                 ctx.close();
@@ -76,15 +81,27 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     private void handleStartTls(ChannelHandlerContext ctx, int messageId) throws Exception {
-        logger.debug("Adding SslHandler to pipeline");
-        SslHandler sslHandler = clientSslContext.newHandler(ctx.channel().alloc());
-        ctx.pipeline().addFirst(sslHandler);
+        logger.debug("Adding SslHandler with Java SSLContext for StartTLS");
+        SSLEngine sslEngine = startTlsSslContext.createSSLEngine();
+        sslEngine.setUseClientMode(false);
+        sslEngine.setNeedClientAuth(false);
+        sslEngine.setEnabledProtocols(new String[]{"TLSv1.3", "TLSv1.2"});
+        logger.debug("Enabled protocols: {}", Arrays.toString(sslEngine.getEnabledProtocols()));
+        logger.debug("Enabled ciphers: {}", Arrays.toString(sslEngine.getEnabledCipherSuites()));
 
-        // Ждём завершения TLS-handshake
+        SslHandler sslHandler = new SslHandler(sslEngine);
+        sslHandler.setHandshakeTimeout(30000, TimeUnit.MILLISECONDS);
+        ctx.pipeline().addFirst("ssl", sslHandler);
+
+        // Отправляем StartTLS-ответ сразу
+        logger.debug("Sending StartTLS response before handshake");
+        sendStartTlsResponse(ctx, messageId);
+
+        // Отслеживаем handshake
         sslHandler.handshakeFuture().addListener(future -> {
             if (future.isSuccess()) {
-                logger.debug("TLS handshake completed successfully");
-                sendStartTlsResponse(ctx, messageId);
+                logger.debug("TLS handshake completed successfully with cipher: {}", sslHandler.engine().getSession().getCipherSuite());
+                logger.info("StartTLS established with client");
             } else {
                 logger.error("TLS handshake failed", future.cause());
                 ctx.close();
@@ -126,8 +143,9 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             return;
         }
 
-        SslContext targetSslContext = proxySslContexts.get(targetServer);
-        if (targetSslContext == null) {
+        SslContext targetSslContext = proxySslContexts.get(targetServer); // Для LDAPS
+        SSLContext targetStartTlsContext = outgoingSslContexts.get(targetServer); // Для StartTLS
+        if (targetSslContext == null && targetStartTlsContext == null) {
             logger.error("No SSL context found for server: {}", targetServer);
             ctx.close();
             return;
@@ -141,13 +159,27 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         Bootstrap bootstrap = new Bootstrap();
         bootstrap.group(group)
                 .channel(NioSocketChannel.class)
-                .handler(new ChannelInitializer<NioSocketChannel>() { // Указываем конкретный тип
+                .handler(new ChannelInitializer<NioSocketChannel>() {
                     @Override
-                    protected void initChannel(NioSocketChannel ch) { // Используем NioSocketChannel
-                        ch.pipeline().addLast(targetSslContext.newHandler(ch.alloc(), host, port));
-                        if (serverConfig.isStartTls()) {
-                            // TODO: StartTLS для исходящего соединения
-                            logger.info("StartTLS required for server: {}", targetServer);
+                    protected void initChannel(NioSocketChannel ch) {
+                        if (serverConfig.isStartTls() && targetStartTlsContext != null) {
+                            logger.debug("Configuring StartTLS for outbound connection to {}", targetServer);
+                            SSLEngine sslEngine = targetStartTlsContext.createSSLEngine(host, port);
+                            sslEngine.setUseClientMode(true);
+                            SslHandler sslHandler = new SslHandler(sslEngine);
+                            sslHandler.setHandshakeTimeout(30000, TimeUnit.MILLISECONDS);
+                            ch.pipeline().addLast(sslHandler);
+                            sslHandler.handshakeFuture().addListener(future -> {
+                                if (future.isSuccess()) {
+                                    logger.debug("Outbound StartTLS handshake completed with {}", targetServer);
+                                } else {
+                                    logger.error("Outbound StartTLS handshake failed for {}", targetServer, future.cause());
+                                    ch.close();
+                                }
+                            });
+                        } else if (targetSslContext != null) {
+                            logger.debug("Configuring LDAPS for outbound connection to {}", targetServer);
+                            ch.pipeline().addLast(targetSslContext.newHandler(ch.alloc(), host, port));
                         }
                         ch.pipeline().addLast(new SimpleChannelInboundHandler<ByteBuf>() {
                             @Override
@@ -170,7 +202,6 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         });
     }
 
-
     private boolean checkMessageSize(ByteBuf msg) {
         int maxMessageSize = configProperties.getProxyConfig().getMaxMessageSize();
         if (msg.readableBytes() > maxMessageSize) {
@@ -187,28 +218,32 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             ASN1StreamReader asn1Reader = new ASN1StreamReader(new ByteArrayInputStream(bytes));
             LDAPMessage ldapMessage = LDAPMessage.readFrom(asn1Reader, true);
             int messageType = ldapMessage.getProtocolOpType();
+            logger.debug("LDAP message type: {} on pipeline: {}", messageType, ctx.pipeline().names());
 
             if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_EXTENDED_REQUEST) {
                 ExtendedRequestProtocolOp extendedOp = ldapMessage.getExtendedRequestProtocolOp();
                 if (START_TLS_OID.equals(extendedOp.getOID())) {
                     logger.info("Received StartTLS request from client");
                     handleStartTls(ctx, ldapMessage.getMessageID());
-                    return null; // StartTLS обработан
+                    return null;
                 }
             } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST) {
                 SearchRequestProtocolOp searchOp = ldapMessage.getSearchRequestProtocolOp();
                 String dn = searchOp.getBaseDN();
+                logger.debug("Search request DN: {}", dn);
                 for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
                     if (dn.equals(entry.getValue().getVirtualDn())) {
                         return entry.getKey();
                     }
                 }
-                logger.warn("No remote LDAP server found for servicing DN: {}", dn);
+                logger.warn("No remote LDAP server found for DN: {}", dn);
+                return "dc-01";
             }
-            return "dc-01"; // Fallback
+            logger.debug("Unhandled message type: {}", messageType);
+            return "dc-01";
         } catch (Exception e) {
             logger.error("Failed to parse LDAP request", e);
-            return "dc-01"; // Fallback
+            return "dc-01";
         }
     }
 

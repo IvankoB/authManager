@@ -1,9 +1,8 @@
 package edu.uwed.authManager.configuration;
 
-import edu.uwed.authManager.ldap.LdapRequestHandler;
+import edu.uwed.authManager.ldap.LdapProxyServer;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ssl.SslBundle;
 import org.springframework.boot.ssl.SslBundles;
@@ -14,6 +13,7 @@ import org.springframework.ldap.core.LdapTemplate;
 
 import javax.naming.Context;
 import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 import java.security.KeyStore;
 import java.util.HashMap;
@@ -26,6 +26,8 @@ import org.slf4j.LoggerFactory;
 @Configuration
 //@RequiredArgsConstructor
 public class LdapConfig {
+
+    private static final Logger logger = LoggerFactory.getLogger(LdapProxyServer.class);
 
     // beans to autowire by the @RequiredArgs-ed Constructor
     private final SslBundles sslBundles;
@@ -52,6 +54,19 @@ public class LdapConfig {
                 .forServer(keyManagerFactory)
                 .trustManager(trustManagerFactory)
                 .build();
+    }
+
+    @Bean(name = "startTlsSslContext")
+    public SSLContext startTlsSslContext() throws Exception {
+        SslBundle sslBundle = sslBundles.getBundle("ldaps"); // Для входящих StartTLS
+        KeyStore keyStore = sslBundle.getStores().getKeyStore();
+        String keyPassword = sslBundle.getKey().getPassword();
+        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        kmf.init(keyStore, keyPassword != null ? keyPassword.toCharArray() : null);
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(kmf.getKeyManagers(), null, null);
+        logger.debug("Created Java SSLContext for StartTLS with alias: {}", keyStore.aliases().nextElement());
+        return sslContext;
     }
 
     @Bean
@@ -81,6 +96,30 @@ public class LdapConfig {
             sslContexts.put(serverName, sslContext); // Ключ — имя сервера ("dc-01", "dc-02")
         }
 
+        return sslContexts;
+    }
+
+    @Bean
+    public Map<String, SSLContext> outgoingSslContexts() throws Exception {
+        Map<String, SSLContext> sslContexts = new HashMap<>();
+        for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
+            String serverName = entry.getKey();
+            String sslBundleName = entry.getValue().getSslBundle();
+            if (sslBundleName != null) {
+                SslBundle sslBundle = sslBundles.getBundle(sslBundleName);
+                KeyStore keyStore = sslBundle.getStores().getKeyStore();
+                String keyPassword = sslBundle.getKey().getPassword();
+                KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+                kmf.init(keyStore, keyPassword != null ? keyPassword.toCharArray() : null);
+                KeyStore trustStore = sslBundle.getStores().getTrustStore();
+                TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+                tmf.init(trustStore);
+                SSLContext sslContext = SSLContext.getInstance("TLS");
+                sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
+                sslContexts.put(serverName, sslContext);
+                logger.debug("Created outgoing Java SSLContext for server: {}", serverName);
+            }
+        }
         return sslContexts;
     }
 

@@ -11,6 +11,7 @@ import com.unboundid.util.ByteStringBuffer;
 import edu.uwed.authManager.configuration.ConfigProperties;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
@@ -46,6 +47,8 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 //    private String targetServer;
     private static final Logger logger = LoggerFactory.getLogger(LdapRequestHandler.class);
     private static final String START_TLS_OID = "1.3.6.1.4.1.1466.20037";
+
+    // Константы для типов сообщений LDAP
 
     public LdapRequestHandler(
             ConfigProperties configProperties,
@@ -202,7 +205,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         return channel;
     }
 
-    private void configureOutboundSsl(SocketChannel ch, ConfigProperties.LdapServerConfig config, String host, int port, String targetServer) {
+    private void _configureOutboundSsl(SocketChannel ch, ConfigProperties.LdapServerConfig config, String host, int port, String targetServer) {
         boolean isLdaps = config.getUrl().toLowerCase().startsWith("ldaps://");
         SslContext targetSslContext = proxySslContexts.get(targetServer);
         if (targetSslContext == null && isLdaps) {
@@ -214,10 +217,13 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         logger.debug("Configuring SSL for {}. isLdaps: {}, hasStartTls: {}, targetSslContext: {}, targetStartTlsContext: {}",
                 targetServer, isLdaps, config.isStartTls(), targetSslContext != null, targetStartTlsContext != null);
 
-        if (config.isStartTls() && !isLdaps && targetStartTlsContext != null) {
+        if (config.isStartTls() && !isLdaps/* && targetStartTlsContext != null*/) {
             logger.debug("Configuring StartTLS for outbound connection to {}", targetServer);
             SSLEngine sslEngine = targetStartTlsContext.createSSLEngine(host, port);
             sslEngine.setUseClientMode(true);
+
+            // Создаём StartTLS-запрос с messageId = 1
+            ByteBuf startTlsRequest = createStartTlsRequest(1);
 
             if (config.getSslProtocols() != null && !config.getSslProtocols().isEmpty()) {
                 String[] protocols = Arrays.stream(config.getSslProtocols().split(","))
@@ -261,6 +267,105 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         }
     }
 
+    private void configureOutboundSsl(SocketChannel ch, ConfigProperties.LdapServerConfig config, String host, int port, String targetServer) {
+        boolean isLdaps = config.getUrl().toLowerCase().startsWith("ldaps://");
+        SslContext targetSslContext = proxySslContexts.get(targetServer);
+        if (targetSslContext == null && isLdaps) {
+            targetSslContext = proxySslContexts.get("ldaps");
+            logger.debug("Falling back to default 'ldaps' SslContext for {}", targetServer);
+        }
+        SSLContext targetStartTlsContext = outgoingSslContexts.get(targetServer);
+
+        logger.debug("Configuring SSL for {}. isLdaps: {}, hasStartTls: {}, targetSslContext: {}, targetStartTlsContext: {}",
+                targetServer, isLdaps, config.isStartTls(), targetSslContext != null, targetStartTlsContext != null);
+
+        if (config.isStartTls() && !isLdaps /* && targetStartTlsContext != null */) {
+            logger.debug("Configuring StartTLS for outbound connection to {}", targetServer);
+
+            ByteBuf startTlsRequest = createStartTlsRequest(LdapConstants.START_TLS_MESSAGE_ID);
+
+            ch.writeAndFlush(startTlsRequest).addListener(future -> {
+                if (future.isSuccess()) {
+                    logger.debug("StartTLS request sent successfully to {}", targetServer);
+                    ch.pipeline().addLast("startTlsHandler", new SimpleChannelInboundHandler<LdapMessageDecoder.CustomLDAPMessage>() {
+                        @Override
+                        protected void channelRead0(ChannelHandlerContext ctx, LdapMessageDecoder.CustomLDAPMessage msg) throws Exception {
+                            if (msg.getType() == LdapConstants.EXTENDED_RESPONSE_TYPE) {
+                                logger.debug("Received StartTLS response: {}", msg);
+
+                                int resultCode = parseResultCode(msg);
+                                if (resultCode == 0) {
+                                    logger.info("StartTLS request accepted by {}", targetServer);
+
+                                    SSLEngine sslEngine = targetStartTlsContext.createSSLEngine(host, port);
+                                    sslEngine.setUseClientMode(true);
+
+                                    if (config.getSslProtocols() != null && !config.getSslProtocols().isEmpty()) {
+                                        String[] protocols = Arrays.stream(config.getSslProtocols().split(","))
+                                                .map(String::trim)
+                                                .filter(s -> !s.isEmpty())
+                                                .toArray(String[]::new);
+                                        sslEngine.setEnabledProtocols(protocols);
+                                        logger.debug("Set protocols for {}: {}", targetServer, Arrays.toString(protocols));
+                                    }
+
+                                    if (config.getSslCiphers() != null && !config.getSslCiphers().isEmpty()) {
+                                        String[] ciphers = Arrays.stream(config.getSslCiphers().split(","))
+                                                .map(String::trim)
+                                                .filter(s -> !s.isEmpty())
+                                                .toArray(String[]::new);
+                                        sslEngine.setEnabledCipherSuites(ciphers);
+                                        logger.debug("Set ciphers for {}: {}", targetServer, Arrays.toString(ciphers));
+                                    }
+
+                                    logger.debug("Enabled protocols: {}, ciphers: {}",
+                                            Arrays.toString(sslEngine.getEnabledProtocols()),
+                                            Arrays.toString(sslEngine.getEnabledCipherSuites()));
+
+                                    SslHandler sslHandler = new SslHandler(sslEngine);
+                                    sslHandler.setHandshakeTimeout(30_000, TimeUnit.MILLISECONDS);
+                                    ctx.pipeline().addLast(sslHandler);
+                                    sslHandler.handshakeFuture().addListener(future1 -> {
+                                        if (future1.isSuccess()) {
+                                            logger.debug("Outbound StartTLS handshake completed with {}", targetServer);
+                                        } else {
+                                            logger.error("Outbound StartTLS handshake failed for {}", targetServer, future1.cause());
+                                            ctx.close();
+                                        }
+                                    });
+
+                                    ctx.pipeline().remove(this);
+                                } else {
+                                    logger.error("StartTLS request failed with resultCode: {} for server {}", resultCode, targetServer);
+                                    ctx.close();
+                                }
+                            } else {
+                                logger.error("Unexpected response type: {} from server {}", msg.getType(), targetServer);
+                                ctx.close();
+                            }
+                        }
+
+                        @Override
+                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                            logger.error("Error while waiting for StartTLS response from {}: {}", targetServer, cause.getMessage(), cause);
+                            ctx.close();
+                        }
+                    });
+                } else {
+                    logger.error("Failed to send StartTLS request to {}: {}", targetServer, future.cause());
+                    ch.close();
+                }
+            });
+        } else if (isLdaps && targetSslContext != null) {
+            logger.debug("Configuring LDAPS for outbound connection to {}", targetServer);
+            ch.pipeline().addLast(targetSslContext.newHandler(ch.alloc(), host, port));
+        } else {
+            logger.warn("No suitable SSL configuration for server: {}. isLdaps: {}, hasStartTls: {}",
+                    targetServer, isLdaps, config.isStartTls());
+        }
+    }
+
+
     private boolean checkMessageSize(ByteBuf msg) {
         int maxMessageSize = configProperties.getProxyConfig().getMaxMessageSize();
         if (msg.readableBytes() > maxMessageSize) {
@@ -268,6 +373,43 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             return false;
         }
         return true;
+    }
+
+    /**
+     * Создаёт StartTLS Extended Request в формате LDAP.
+     * @param messageId Идентификатор сообщения.
+     * @return ByteBuf с закодированным StartTLS-запросом.
+     */
+    private ByteBuf createStartTlsRequest(int messageId) {
+        // ASN.1 структура:
+        // 0x30 - SEQUENCE (универсальный тег для LDAPMessage)
+        // 0x80 - messageID (контекстный тег 0)
+        // 0x77 - ExtendedRequest (контекстный тег 23, в вашем декодере 96)
+        // 0x80 - extendedRequest OID (контекстный тег 0)
+        ByteBuf request = Unpooled.buffer();
+        request.writeByte(0x30); // SEQUENCE
+        request.writeByte(0x0F); // Длина всей структуры (15 байт)
+        request.writeByte(0x02); // INTEGER (messageID)
+        request.writeByte(0x01); // Длина messageID
+        request.writeByte(messageId); // messageID
+        request.writeByte(0x77); // ExtendedRequest (код 23, в вашем декодере 96)
+        request.writeByte(0x0A); // Длина ExtendedRequest
+        request.writeByte(0x80); // OID (контекстный тег 0)
+        request.writeByte(0x08); // Длина OID
+        // OID 1.3.6.1.4.1.1466.20037 в DER-кодировании
+        request.writeBytes(new byte[] {
+                (byte) 0x2B, (byte) 0x06, (byte) 0x01, (byte) 0x04,
+                (byte) 0x01, (byte) 0x92, (byte) 0x26, (byte) 0x05
+        });
+        return request;
+    }
+
+    private int parseResultCode(LdapMessageDecoder.CustomLDAPMessage msg) {
+        int resultCode = msg.getResultCode();
+        if (resultCode == -1) {
+            logger.error("ResultCode not parsed for ExtendedResponse");
+        }
+        return resultCode;
     }
 
     private String negotiateTargetServer(ChannelHandlerContext ctx, ByteBuf msg) {

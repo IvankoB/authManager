@@ -1,10 +1,13 @@
 package edu.uwed.authManager.configuration;
 
+import lombok.AllArgsConstructor;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -73,6 +76,8 @@ public class ConfigProperties {
         private boolean ignoreSslVerification;
         private String referralHandling;
         private String sslBundle;
+        private String sslProtocols;
+        private String sslCiphers;
     }
 
     @Data
@@ -86,6 +91,7 @@ public class ConfigProperties {
     public static class ProxyConfig {
         private int maxMessageSize;
         private Port port;
+        private String sslProtocols; // Опционально для входящих соединений
 
         @Data
         public static class Port {
@@ -95,5 +101,40 @@ public class ConfigProperties {
 
     }
 
+    @Data
+    @AllArgsConstructor
+    public static class HostPortTuple {
+        private String host;
+        private int port;
+
+        public static HostPortTuple extractHostAndPort(String url) {
+            if (url == null || url.isEmpty()) {
+                throw new IllegalArgumentException("URL is null or empty in LdapServerConfig");
+            }
+
+            try {
+                URI uri = new URI(url);
+                String host = uri.getHost();
+                int port = uri.getPort();
+
+                // Если порт не указан, используем стандартный в зависимости от схемы
+                if (port == -1) {
+                    if ("ldaps".equalsIgnoreCase(uri.getScheme())) {
+                        port = 636; // Стандартный порт для LDAPS
+                    } else {
+                        port = 389; // Стандартный порт для LDAP
+                    }
+                }
+
+                if (host == null || host.isEmpty()) {
+                    throw new IllegalArgumentException("Host is null or empty in URL: " + url);
+                }
+
+                return new HostPortTuple(host, port);
+            } catch (URISyntaxException e) {
+                throw new IllegalArgumentException("Invalid URL format in LdapServerConfig: " + url, e);
+            }
+        }
+    }
 
 }

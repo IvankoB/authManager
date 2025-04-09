@@ -1,6 +1,7 @@
 package edu.uwed.authManager.ldap;
 
 import edu.uwed.authManager.configuration.ConfigProperties;
+import edu.uwed.authManager.services.LdapService;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -24,6 +25,7 @@ public class LdapProxyServer {
     private static final Logger logger = LoggerFactory.getLogger(LdapProxyServer.class);
 
     private final ConfigProperties configProperties;
+    private final LdapService ldapService;
     private final SslContext sslContext;
     private final Map<String, LdapTemplate> ldapTemplates;
     private final Map<String, SslContext> proxySslContexts;
@@ -38,14 +40,16 @@ public class LdapProxyServer {
     @Autowired
     public LdapProxyServer(
             ConfigProperties configProperties,
-            @Qualifier("ldaps") SslContext sslContext,
+            LdapService ldapService,
+            @Qualifier("ldaps") SslContext ldapsSslContext,
             Map<String, LdapTemplate> ldapTemplates,
             Map<String, SslContext> proxySslContexts,
             @Qualifier("startTlsSslContext") SSLContext startTlsSslContext,
             Map<String, SSLContext> outgoingSslContexts
     ) {
         this.configProperties = configProperties;
-        this.sslContext = sslContext;
+        this.ldapService = ldapService;
+        this.sslContext = ldapsSslContext;
         this.ldapTemplates = ldapTemplates;
         this.proxySslContexts = proxySslContexts;
         this.startTlsSslContext = startTlsSslContext;
@@ -64,16 +68,22 @@ public class LdapProxyServer {
         ServerBootstrap ldapBootstrap = new ServerBootstrap();
         ldapBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
-                .childHandler(new LdapServerInitializer(configProperties, sslContext, ldapTemplates, proxySslContexts, startTlsSslContext, outgoingSslContexts, false, maxMessageSize))
+                .childHandler(new LdapServerInitializer(configProperties, sslContext, ldapService, ldapTemplates, proxySslContexts, startTlsSslContext, outgoingSslContexts, false, maxMessageSize))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);
 
         ServerBootstrap ldapsBootstrap = new ServerBootstrap();
         ldapsBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
-                .childHandler(new LdapServerInitializer(configProperties, sslContext, ldapTemplates, proxySslContexts, startTlsSslContext, outgoingSslContexts, true, maxMessageSize))
-                .childHandler(new LdapServerInitializer(configProperties, sslContext, ldapTemplates, proxySslContexts, startTlsSslContext, outgoingSslContexts, true, maxMessageSize))
-                .childHandler(new LdapServerInitializer(configProperties, sslContext, ldapTemplates, proxySslContexts, startTlsSslContext, outgoingSslContexts, true, maxMessageSize))
+                .childHandler(new LdapServerInitializer(
+                    configProperties, sslContext, ldapService, ldapTemplates, proxySslContexts, startTlsSslContext, outgoingSslContexts, true, maxMessageSize)
+                )
+                .childHandler(new LdapServerInitializer(
+                    configProperties, sslContext, ldapService, ldapTemplates, proxySslContexts, startTlsSslContext, outgoingSslContexts, true, maxMessageSize)
+                )
+                .childHandler(new LdapServerInitializer(
+                    configProperties, sslContext, ldapService, ldapTemplates, proxySslContexts, startTlsSslContext, outgoingSslContexts, true, maxMessageSize)
+                )
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);
 

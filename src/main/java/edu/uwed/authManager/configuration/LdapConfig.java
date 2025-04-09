@@ -40,6 +40,7 @@ public class LdapConfig {
         this.configProperties = configProperties;
     }
 
+    // incoming LDAPS
     @Bean(name = "ldaps") // Переименовали
     public SslContext ldaps() throws Exception {
         SslBundle sslBundle = sslBundles.getBundle("ldaps");
@@ -57,6 +58,7 @@ public class LdapConfig {
                 .build();
     }
 
+    // incoming startTLS
     @Bean(name = "startTlsSslContext")
     public SSLContext startTlsSslContext() throws Exception {
         SslBundle sslBundle = sslBundles.getBundle("ldaps"); // Для входящих StartTLS

@@ -92,6 +92,7 @@ public class ConfigProperties {
         private int maxMessageSize;
         private Port port;
         private String sslProtocols; // Опционально для входящих соединений
+        private boolean needClientAuth;
 
         @Data
         public static class Port {

@@ -17,7 +17,7 @@ public class WebSecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
             .authorizeHttpRequests(authorize -> authorize
-            .requestMatchers("/hello").permitAll() // Доступ к /hello без аутентификации
+            .requestMatchers("/hello", "/test-ldap").permitAll() // Доступ к /hello без аутентификации
             .anyRequest().authenticated() // Все остальные запросы требуют аутентификации
             )
             .httpBasic(httpBasic -> httpBasic.realmName("Realm")); // Современный способ с настройкой realm

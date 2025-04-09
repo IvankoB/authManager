@@ -1,6 +1,7 @@
 package edu.uwed.authManager.services;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.ldap.core.ContextMapper;
 import org.springframework.ldap.core.DirContextOperations;
 import org.springframework.ldap.core.LdapTemplate;
 import org.springframework.ldap.core.support.BaseLdapPathContextSource;
@@ -8,6 +9,7 @@ import org.springframework.ldap.core.support.LdapContextSource;
 import org.springframework.stereotype.Service;
 
 import javax.naming.directory.DirContext;
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -54,14 +56,47 @@ public class LdapService {
         }
     }
 
-    public Object searchUser(String serverId, String username) {
+    public boolean bind(String serverId, String bindDn, String password) {
+        BaseLdapPathContextSource contextSource = contextSources.get(serverId);
+        if (contextSource == null) {
+            System.err.println("No context source found for server: " + serverId);
+            return false;
+        }
+
+        if (!(contextSource instanceof LdapContextSource ldapContextSource)) {
+            System.err.println("Context source for server " + serverId + " is not an LdapContextSource");
+            return false;
+        }
+
+        DirContext ctx = null;
+        try {
+            ctx = ldapContextSource.getContext(bindDn, password);
+            System.out.println("Successfully bound to LDAP server: " + serverId + " with DN: " + bindDn);
+            return true;
+        } catch (Exception e) {
+            System.err.println("Failed to bind to LDAP server " + serverId + " with DN: " + bindDn + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    public List<DirContextOperations> search(String serverId, String baseDn, String filter) {
         BaseLdapPathContextSource contextSource = contextSources.get(serverId);
         if (contextSource == null) {
             throw new IllegalArgumentException("No context source found for server: " + serverId);
         }
 
         LdapTemplate ldapTemplate = new LdapTemplate(contextSource);
-        return ldapTemplate.lookup("cn=" + username + ",cn=users,dc=uwed,dc=edu");
+        return ldapTemplate.search (baseDn, filter, (ContextMapper)(ctx) -> ctx);
+    }
+
+    public DirContextOperations searchUser(String serverId, String username) {
+        BaseLdapPathContextSource contextSource = contextSources.get(serverId);
+        if (contextSource == null) {
+            throw new IllegalArgumentException("No context source found for server: " + serverId);
+        }
+
+        LdapTemplate ldapTemplate = new LdapTemplate(contextSource);
+        return (DirContextOperations) ldapTemplate.lookup("cn=" + username + ",cn=users,dc=uwed,dc=edu");
     }
 
 }

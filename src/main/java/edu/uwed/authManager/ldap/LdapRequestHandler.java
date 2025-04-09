@@ -1,10 +1,7 @@
 package edu.uwed.authManager.ldap;
 
 import com.unboundid.asn1.ASN1StreamReader;
-import com.unboundid.ldap.protocol.ExtendedRequestProtocolOp;
-import com.unboundid.ldap.protocol.ExtendedResponseProtocolOp;
-import com.unboundid.ldap.protocol.LDAPMessage;
-import com.unboundid.ldap.protocol.SearchRequestProtocolOp;
+import com.unboundid.ldap.protocol.*;
 import com.unboundid.ldap.sdk.LDAPResult;
 import com.unboundid.ldap.sdk.ResultCode;
 import com.unboundid.util.ByteStringBuffer;
@@ -21,12 +18,14 @@ import io.netty.handler.ssl.SslHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.ldap.core.DirContextOperations;
 import org.springframework.ldap.core.LdapTemplate;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import java.io.ByteArrayInputStream;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -154,11 +153,35 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
             if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST) {
                 logger.debug("Received BindRequest with messageId: {}", messageId);
-                sendBindResponse(ctx, messageId, 0); // resultCode=0 (success)
+                BindRequestProtocolOp bindOp = targetInfo.getLdapMessage().getBindRequestProtocolOp();
+                String bindDn = bindOp.getBindDN();
+                byte[] passwordBytes = bindOp.getSimplePassword().getValue();
+                String password = passwordBytes != null ? new String(passwordBytes) : "";
+
+                // Выполняем привязку через LdapService
+                boolean bindSuccess = ldapService.bind(target, bindDn, password);
+                if (bindSuccess) {
+                    logger.info("Bind successful for DN: {}", bindDn);
+                    sendBindResponse(ctx, messageId, 0); // resultCode=0 (success)
+                } else {
+                    logger.error("Bind failed for DN: {}", bindDn);
+                    sendBindResponse(ctx, messageId, 49); // resultCode=49 (invalidCredentials)
+                }
             } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST) {
                 logger.debug("Received SearchRequest with messageId: {}", messageId);
-                // Здесь можно выполнить поиск через LdapService
-                // Для примера отправим заглушку ответа
+                SearchRequestProtocolOp searchOp = targetInfo.getLdapMessage().getSearchRequestProtocolOp();
+                String baseDn = searchOp.getBaseDN();
+                String filter = searchOp.getFilter().toString();
+
+                // Выполняем поиск через LdapService
+                List<DirContextOperations> results = ldapService.search(target, baseDn, filter);
+                if (results.isEmpty()) {
+                    logger.debug("No results found for filter: {}", filter);
+                } else {
+                    logger.debug("Found {} results for filter: {}", results.size(), filter);
+                    // Здесь можно отправить SearchResultEntry для каждой записи
+                    // Для примера отправим только SearchResultDone
+                }
                 sendSearchResponse(ctx, messageId);
             } else {
                 logger.warn("Unsupported LDAP operation: type={}", messageType);

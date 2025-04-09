@@ -27,7 +27,9 @@ public class LdapOrmConfig {
     public Map<String, BaseLdapPathContextSource> contextSource() throws Exception {
         Map<String, BaseLdapPathContextSource> contextSources = new HashMap<>();
 
-        for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
+        for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry :
+            configProperties.getLdapServerConfigs().entrySet())
+        {
             String serverId = entry.getKey();
             ConfigProperties.LdapServerConfig serverConfig = entry.getValue();
 

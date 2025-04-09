@@ -1,7 +1,10 @@
 package edu.uwed.authManager.configuration;
 
+import jakarta.annotation.PostConstruct;
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -43,8 +46,15 @@ local.proxy-users[1].allowed-dns[0]=dc=dc-01,dc=proxy,dc=local
 
 * */
 @Configuration
+//@ConfigurationProperties(prefix = "local.ldap")
 @Data
 public class ConfigProperties {
+
+    private static final Logger logger = LoggerFactory.getLogger(ConfigProperties.class);
+
+    public ConfigProperties() {
+        logger.debug("Initializing ConfigProperties");
+    }
 
     @Bean
     @ConfigurationProperties(prefix = "local.ldap.servers")
@@ -78,6 +88,24 @@ public class ConfigProperties {
         private String sslBundle;
         private String sslProtocols;
         private String sslCiphers;
+
+//        @Override
+//        public String toString() {
+//            return "LdapServerConfig{" +
+//                    "url='" + url + '\'' +
+//                    ", startTls=" + startTls +
+//                    ", startTlsRequired=" + startTlsRequired +
+//                    ", ignoreSslVerification=" + ignoreSslVerification +
+//                    ", sslBundle='" + sslBundle + '\'' +
+//                    ", referralHandling='" + referralHandling + '\'' +
+//                    ", userDn='" + userDn + '\'' +
+//                    ", password='[PROTECTED]'" +
+//                    ", base='" + base + '\'' +
+//                    ", virtualDn='" + virtualDn + '\'' +
+//                    ", sslProtocols='" + sslProtocols + '\'' +
+//                    ", sslCiphers='" + sslCiphers + '\'' +
+//                    '}';
+//        }
     }
 
     @Data

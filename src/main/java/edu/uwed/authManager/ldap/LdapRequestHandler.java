@@ -58,7 +58,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     // send our response to client's StartTLS that we agree to use secured LDAP with TLS
     private void sendStartTlsResponse(ChannelHandlerContext ctx, int messageId) {
-        logger.debug("Sending StartTLS response");
+        //logger.debug("Sending StartTLS response");
         ExtendedResponseProtocolOp responseOp = new ExtendedResponseProtocolOp(
             new LDAPResult(messageId, ResultCode.SUCCESS)
         );
@@ -71,8 +71,8 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         responseBuf.writeBytes(responseBytes);
         ctx.writeAndFlush(responseBuf).addListener(future -> {
             if (future.isSuccess()) {
-                logger.debug("StartTLS response sent successfully");
-            } else {
+//                logger.debug("StartTLS response sent successfully");
+//            } else {
                 logger.error("Failed to send StartTLS response", future.cause());
                 ctx.close();
             }
@@ -82,10 +82,10 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     // for incoming LDAP connections
     private void handleStartTls(ChannelHandlerContext ctx, int messageId) throws Exception {
         ConfigProperties.ProxyConfig proxyConfig = configProperties.getProxyConfig();
-        logger.debug("Handling StartTLS request");
+//        logger.debug("Handling StartTLS request");
         sendStartTlsResponse(ctx, messageId); // tell cleint that we agtee to use TLS secured LDAP
 
-        logger.debug("Adding SslHandler with Java SSLContext for StartTLS");
+//        logger.debug("Adding SslHandler with Java SSLContext for StartTLS");
         SSLEngine sslEngine = startTlsSslContext.createSSLEngine(); // verified certs => engine
         sslEngine.setUseClientMode(false); // we are a server
         sslEngine.setNeedClientAuth(proxyConfig != null && proxyConfig.isNeedClientAuth());
@@ -95,12 +95,12 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         if (sslProtocols != null && !sslProtocols.isEmpty()) {
             String[] protocols = sslProtocols.split(",");
             sslEngine.setEnabledProtocols(protocols);
-            logger.debug("Applied protocols from proxy config for StartTLS: {}", Arrays.toString(protocols));
+//            logger.debug("Applied protocols from proxy config for StartTLS: {}", Arrays.toString(protocols));
         } else {
             // Дефолтное значение, если конфигурации нет
             String[] defaultProtocols = {"TLSv1.3", "TLSv1.2"};
             sslEngine.setEnabledProtocols(defaultProtocols);
-            logger.debug("No sslProtocols in proxy config, using default: {}", Arrays.toString(defaultProtocols));
+//            logger.debug("No sslProtocols in proxy config, using default: {}", Arrays.toString(defaultProtocols));
         }
 
         SslHandler sslHandler = new SslHandler(sslEngine); // tuned engine => network SSL handler
@@ -109,9 +109,9 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
         sslHandler.handshakeFuture().addListener(future -> {
             if (future.isSuccess()) {
-                logger.debug("TLS handshake completed successfully with cipher: {}", sslHandler.engine().getSession().getCipherSuite());
-                logger.info("StartTLS established with client");
-            } else {
+//                logger.debug("TLS handshake completed successfully with cipher: {}", sslHandler.engine().getSession().getCipherSuite());
+//                logger.info("StartTLS established with client");
+//            } else {
                 logger.error("TLS handshake failed", future.cause());
                 ctx.close();
             }
@@ -126,10 +126,10 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             return;
         }
 
-        logger.debug("Received message with {} bytes on pipeline: {}", msg.readableBytes(), ctx.pipeline().names());
+//        logger.debug("Received message with {} bytes on pipeline: {}", msg.readableBytes(), ctx.pipeline().names());
         TargetServerInfo targetInfo = negotiateTargetServer(ctx, msg);
         String target = targetInfo.getTarget();
-        logger.debug("Negotiated target server: {}", target);
+//        logger.debug("Negotiated target server: {}", target);
 
         if (target != null) {
             ConfigProperties.LdapServerConfig config = configProperties.getLdapServerConfigs().get(target);
@@ -152,36 +152,12 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             int messageId = targetInfo.getMessageId();
 
             if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST) {
-                logger.debug("Received BindRequest with messageId: {}", messageId);
-                BindRequestProtocolOp bindOp = targetInfo.getLdapMessage().getBindRequestProtocolOp();
-                String bindDn = bindOp.getBindDN();
-                byte[] passwordBytes = bindOp.getSimplePassword().getValue();
-                String password = passwordBytes != null ? new String(passwordBytes) : "";
-
-                // Выполняем привязку через LdapService
-                boolean bindSuccess = ldapService.bind(target, bindDn, password);
-                if (bindSuccess) {
-                    logger.info("Bind successful for DN: {}", bindDn);
-                    sendBindResponse(ctx, messageId, 0); // resultCode=0 (success)
-                } else {
-                    logger.error("Bind failed for DN: {}", bindDn);
-                    sendBindResponse(ctx, messageId, 49); // resultCode=49 (invalidCredentials)
-                }
+//                logger.debug("Received BindRequest with messageId: {}", messageId);
+                sendBindResponse(ctx, messageId, 0); // resultCode=0 (success)
             } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST) {
-                logger.debug("Received SearchRequest with messageId: {}", messageId);
-                SearchRequestProtocolOp searchOp = targetInfo.getLdapMessage().getSearchRequestProtocolOp();
-                String baseDn = searchOp.getBaseDN();
-                String filter = searchOp.getFilter().toString();
-
-                // Выполняем поиск через LdapService
-                List<DirContextOperations> results = ldapService.search(target, baseDn, filter);
-                if (results.isEmpty()) {
-                    logger.debug("No results found for filter: {}", filter);
-                } else {
-                    logger.debug("Found {} results for filter: {}", results.size(), filter);
-                    // Здесь можно отправить SearchResultEntry для каждой записи
-                    // Для примера отправим только SearchResultDone
-                }
+//                logger.debug("Received SearchRequest with messageId: {}", messageId);
+                // Здесь можно выполнить поиск через LdapService
+                // Для примера отправим заглушку ответа
                 sendSearchResponse(ctx, messageId);
             } else {
                 logger.warn("Unsupported LDAP operation: type={}", messageType);
@@ -207,19 +183,19 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             LDAPMessage ldapMessage = LDAPMessage.readFrom(asn1Reader, true);
             int messageType = ldapMessage.getProtocolOpType();
             int messageId = ldapMessage.getMessageID();
-            logger.debug("LDAP message type: {} on pipeline: {}", messageType, ctx.pipeline().names());
+//            logger.debug("LDAP message type: {} on pipeline: {}", messageType, ctx.pipeline().names());
 
             if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_EXTENDED_REQUEST) {
                 ExtendedRequestProtocolOp extendedOp = ldapMessage.getExtendedRequestProtocolOp();
                 if (LdapConstants.START_TLS_OID.equals(extendedOp.getOID())) {
-                    logger.info("Received StartTLS request from client");
+//                    logger.info("Received StartTLS request from client");
                     handleStartTls(ctx, messageId);
                     return new TargetServerInfo(null, ldapMessage, messageType, messageId);
                 }
             } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST) {
                 SearchRequestProtocolOp searchOp = ldapMessage.getSearchRequestProtocolOp();
                 String dn = searchOp.getBaseDN();
-                logger.debug("Search request DN: {}", dn);
+//                logger.debug("Search request DN: {}", dn);
                 for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
                     if (dn.equals(entry.getValue().getVirtualDn())) {
                         return new TargetServerInfo(entry.getKey(), ldapMessage, messageType, messageId);
@@ -229,7 +205,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 return new TargetServerInfo("dc-01", ldapMessage, messageType, messageId);
             } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST) {
                 String dn = ldapMessage.getBindRequestProtocolOp().getBindDN();
-                logger.debug("Bind request DN: {}", dn);
+//                logger.debug("Bind request DN: {}", dn);
                 for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
                     if (dn.equals(entry.getValue().getVirtualDn())) {
                         return new TargetServerInfo(entry.getKey(), ldapMessage, messageType, messageId);
@@ -248,7 +224,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        logger.info("Client connected: {}", ctx.channel().remoteAddress());
+//        logger.info("Client connected: {}", ctx.channel().remoteAddress());
         // Ничего не подключаем, ждём первого запроса
     }
 

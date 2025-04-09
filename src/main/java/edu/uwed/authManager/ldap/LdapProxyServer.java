@@ -42,10 +42,10 @@ public class LdapProxyServer {
             ConfigProperties configProperties,
             LdapService ldapService,
             @Qualifier("ldaps") SslContext ldapsSslContext,
-            Map<String, LdapTemplate> ldapTemplates,
-            Map<String, SslContext> proxySslContexts,
+            @Qualifier("outboundLdapTemplates") Map<String, LdapTemplate> ldapTemplates,
+            @Qualifier("outboundSslContexts") Map<String, SslContext> proxySslContexts,
             @Qualifier("startTlsSslContext") SSLContext startTlsSslContext,
-            Map<String, SSLContext> outgoingSslContexts
+            @Qualifier("outboundSSLContexts")Map<String, SSLContext> outgoingSslContexts
     ) {
         this.configProperties = configProperties;
         this.ldapService = ldapService;

@@ -1,5 +1,8 @@
 package edu.uwed.authManager.configuration;
 
+import edu.uwed.authManager.ldap.LdapRequestHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,17 +21,29 @@ import java.util.Map;
 public class LdapOrmConfig {
     private final ConfigProperties configProperties;
 
+    private static final Logger logger = LoggerFactory.getLogger(LdapOrmConfig.class);
+
     @Autowired
     public LdapOrmConfig(ConfigProperties configProperties) {
         this.configProperties = configProperties;
+//        logger.info("LdapOrmConfig initialized with ConfigProperties servers: {}", configProperties.getLdapServerConfigs());
     }
 
-    @Bean
+    @Bean(name = "customLdapContextSources")
     public Map<String, BaseLdapPathContextSource> contextSource() throws Exception {
         Map<String, BaseLdapPathContextSource> contextSources = new HashMap<>();
 
+        Map<String, ConfigProperties.LdapServerConfig> serverConfigs = configProperties.getLdapServerConfigs();
+//        logger.debug("LDAP server configs: {}", serverConfigs);
+        if (serverConfigs.isEmpty()) {
+            logger.error("No LDAP server configurations found in ConfigProperties");
+            return contextSources;
+        }
+
+        // Добавляем отладочный лог
+  //      logger.debug("LDAP server configs: {}", configProperties.getLdapServerConfigs());
         for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry :
-            configProperties.getLdapServerConfigs().entrySet())
+                serverConfigs.entrySet())
         {
             String serverId = entry.getKey();
             ConfigProperties.LdapServerConfig serverConfig = entry.getValue();
@@ -81,7 +96,9 @@ public class LdapOrmConfig {
             try {
                 // propagate properties changes if occured
                 contextSource.afterPropertiesSet();
+                logger.debug("Successfully initialized LdapContextSource for server: {}", serverId);
             } catch (Exception e) {
+                logger.error("Failed to initialize LdapContextSource for server: {}", serverId, e);
                 throw new RuntimeException("Failed to initialize LdapContextSource for " + serverId, e);
             }
 

@@ -61,7 +61,6 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
                 }
             });
         }
-        pipeline.addLast(new LdapMessageDecoder(maxMessageSize));
         pipeline.addLast(new LdapRequestHandler(
                 configProperties,
                 ldapService,

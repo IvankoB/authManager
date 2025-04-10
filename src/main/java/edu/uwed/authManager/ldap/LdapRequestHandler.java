@@ -126,6 +126,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
+        logger.info("Reached channelRead0 with {} bytes", msg.readableBytes());
         if (!checkMessageSize(msg)) {
             logger.error("Message size check failed, closing connection");
             ctx.close();
@@ -224,6 +225,20 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         logger.info("Client connected: {}", ctx.channel().remoteAddress());
+        SslHandler sslHandler = ctx.pipeline().get(SslHandler.class);
+        if (sslHandler != null) {
+            logger.info("SSL Handler found in pipeline, waiting for handshake...");
+            sslHandler.handshakeFuture().addListener(future -> {
+                if (future.isSuccess()) {
+                    logger.info("SSL handshake successful with cipher: {}", sslHandler.engine().getSession().getCipherSuite());
+                } else {
+                    logger.error("SSL handshake failed", future.cause());
+                    ctx.close();
+                }
+            });
+        } else {
+            logger.warn("SSL Handler not found in pipeline");
+        }
     }
 
     private void sendBindResponse(ChannelHandlerContext ctx, int messageId, int resultCode) {

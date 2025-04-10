@@ -165,7 +165,7 @@ public class LdapConfig {
             contextSource.setUserDn(config.getUserDn());
             contextSource.setPassword(config.getPassword());
             contextSource.setBase(config.getBase());
-            System.out.println("LdapConfig: Connecting to " + url + " with user " + config.getUserDn());
+            System.out.println("LdapConfig: prepared for connecting to " + url + " with user " + config.getUserDn());
 
             Map<String, Object> env = new HashMap<>();
             boolean isLdaps = config.isLdaps();

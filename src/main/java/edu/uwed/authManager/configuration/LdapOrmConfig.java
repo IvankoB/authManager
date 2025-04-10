@@ -11,6 +11,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.ldap.core.support.BaseLdapPathContextSource;
 import org.springframework.ldap.core.support.LdapContextSource;
 
+import javax.naming.directory.DirContext;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -104,6 +105,10 @@ public class LdapOrmConfig {
                 throw new RuntimeException("Failed to initialize LdapContextSource for " + serverId, e);
             }
 
+            logger.info("Preparing LdapContextSource for future connections to {}", serverConfig.getUrl());
+            DirContext ctx = contextSource.getReadOnlyContext();
+            ctx.close();
+            logger.info("LdapContextSource prepared successfully for future connections to {}", serverConfig.getUrl());
             contextSources.put(serverId, contextSource);
         }
 

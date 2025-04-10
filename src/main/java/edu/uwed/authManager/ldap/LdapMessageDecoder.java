@@ -1,27 +1,24 @@
 package edu.uwed.authManager.ldap;
 
+import edu.uwed.authManager.services.LdapService;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import lombok.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
 public class LdapMessageDecoder extends ByteToMessageDecoder {
+
+    private static final Logger logger = LoggerFactory.getLogger(LdapService.class);
 
     private final long maxMessageSize;
 
     public LdapMessageDecoder(long maxMessageSize) {
         this.maxMessageSize = maxMessageSize;
     }
-
-//    @Override
-//    protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
-//        if (in.readableBytes() > maxMessageSize) {
-//            throw new IllegalStateException("Message size exceeds maxMessageSize: " + maxMessageSize);
-//        }
-//        out.add(in.retain());
-//    }
 
     // Внутренний статический класс CustomLDAPMessage
     @Data
@@ -38,19 +35,24 @@ public class LdapMessageDecoder extends ByteToMessageDecoder {
 
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
+        logger.debug("Received {} bytes for decoding", in.readableBytes());
         if (in.readableBytes() < 2) {
+            logger.debug("Not enough bytes to decode, waiting for more data");
             return;
         }
 
         in.markReaderIndex();
         byte tag = in.readByte();
         if (tag != 0x30) { // SEQUENCE
+            logger.warn("Invalid tag received: 0x{}, expected 0x30 (SEQUENCE)", Integer.toHexString(tag));
             in.resetReaderIndex();
             return;
         }
 
         int length = readLength(in);
+        logger.debug("Decoded length: {}", length);
         if (in.readableBytes() < length) {
+            logger.debug("Not enough bytes for full message, need {} more bytes", length - in.readableBytes());
             in.resetReaderIndex();
             return;
         }
@@ -86,6 +88,7 @@ public class LdapMessageDecoder extends ByteToMessageDecoder {
             message.setResultCode(resultCode);
         }
 
+        logger.debug("Successfully decoded message with type: {}", type);
         out.add(message);
     }
 

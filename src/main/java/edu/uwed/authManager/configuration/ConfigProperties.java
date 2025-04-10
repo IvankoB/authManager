@@ -49,7 +49,6 @@ local.proxy-users[1].allowed-dns[0]=dc=dc-01,dc=proxy,dc=local
 //@ConfigurationProperties(prefix = "local.ldap")
 @Data
 public class ConfigProperties {
-
     private static final Logger logger = LoggerFactory.getLogger(ConfigProperties.class);
 
     public ConfigProperties() {
@@ -76,36 +75,37 @@ public class ConfigProperties {
 
     @Data
     public static class LdapServerConfig {
-        private String url;
+        private String host; // Заменено с name
+        private int ldapPort;
+        private int ldapsPort;
+        private String security; // none, startTLS, ldaps
         private String base;
         private String userDn;
         private String password;
         private String virtualDn;
-        private boolean startTls;
-        private boolean startTlsRequired;
         private boolean ignoreSslVerification;
         private String referralHandling;
         private String sslBundle;
         private String sslProtocols;
         private String sslCiphers;
 
-//        @Override
-//        public String toString() {
-//            return "LdapServerConfig{" +
-//                    "url='" + url + '\'' +
-//                    ", startTls=" + startTls +
-//                    ", startTlsRequired=" + startTlsRequired +
-//                    ", ignoreSslVerification=" + ignoreSslVerification +
-//                    ", sslBundle='" + sslBundle + '\'' +
-//                    ", referralHandling='" + referralHandling + '\'' +
-//                    ", userDn='" + userDn + '\'' +
-//                    ", password='[PROTECTED]'" +
-//                    ", base='" + base + '\'' +
-//                    ", virtualDn='" + virtualDn + '\'' +
-//                    ", sslProtocols='" + sslProtocols + '\'' +
-//                    ", sslCiphers='" + sslCiphers + '\'' +
-//                    '}';
-//        }
+        public String getUrl() {
+            String protocol = "ldap";
+            int port = ldapPort;
+            if ("ldaps".equalsIgnoreCase(security)) {
+                protocol = "ldaps";
+                port = ldapsPort;
+            }
+            return String.format("%s://%s:%d", protocol, host, port);
+        }
+
+        public boolean isStartTls() {
+            return "startTLS".equalsIgnoreCase(security);
+        }
+
+        public boolean isLdaps() {
+            return "ldaps".equalsIgnoreCase(security);
+        }
     }
 
     @Data
@@ -119,7 +119,8 @@ public class ConfigProperties {
     public static class ProxyConfig {
         private int maxMessageSize;
         private Port port;
-        private String sslProtocols; // Опционально для входящих соединений
+        private boolean startTls;
+        private String sslProtocols;
         private boolean needClientAuth;
 
         @Data
@@ -127,7 +128,6 @@ public class ConfigProperties {
             private int ldap;
             private int ldaps;
         }
-
     }
 
     @Data
@@ -146,12 +146,11 @@ public class ConfigProperties {
                 String host = uri.getHost();
                 int port = uri.getPort();
 
-                // Если порт не указан, используем стандартный в зависимости от схемы
                 if (port == -1) {
                     if ("ldaps".equalsIgnoreCase(uri.getScheme())) {
-                        port = 636; // Стандартный порт для LDAPS
+                        port = 636;
                     } else {
-                        port = 389; // Стандартный порт для LDAP
+                        port = 389;
                     }
                 }
 

@@ -50,11 +50,15 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
         if (useSsl) {
             pipeline.addLast(ldapsSslContext.newHandler(ch.alloc()));
         }
+        pipeline.addLast(new LdapMessageDecoder(maxMessageSize));
         pipeline.addLast(new LdapRequestHandler(
-            configProperties,
-            ldapService,
+                configProperties,
+                ldapService,
                 ldapsSslContext,
-            startTlsSslContext
+                startTlsSslContext,
+                ldapTemplates,
+                proxySslContexts,
+                outgoingSslContexts
         ));
     }
 

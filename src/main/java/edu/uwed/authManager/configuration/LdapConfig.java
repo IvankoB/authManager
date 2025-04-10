@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.security.KeyStore;
+import java.security.cert.X509Certificate;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -30,7 +31,6 @@ public class LdapConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(LdapProxyServer.class);
 
-    // beans to autowire by the @RequiredArgs-ed Constructor
     private final SslBundles sslBundles;
     private final ConfigProperties configProperties;
 
@@ -40,8 +40,7 @@ public class LdapConfig {
         this.configProperties = configProperties;
     }
 
-    // incoming LDAPS
-    @Bean(name = "ldaps") // Переименовали
+    @Bean(name = "ldaps")
     public SslContext ldaps() throws Exception {
         SslBundle sslBundle = sslBundles.getBundle("ldaps");
         KeyStore keyStore = sslBundle.getStores().getKeyStore();
@@ -58,10 +57,9 @@ public class LdapConfig {
                 .build();
     }
 
-    // incoming startTLS
     @Bean(name = "startTlsSslContext")
     public SSLContext startTlsSslContext() throws Exception {
-        SslBundle sslBundle = sslBundles.getBundle("ldaps"); // Для входящих StartTLS
+        SslBundle sslBundle = sslBundles.getBundle("ldaps");
         KeyStore keyStore = sslBundle.getStores().getKeyStore();
         String keyPassword = sslBundle.getKey().getPassword();
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
@@ -75,14 +73,14 @@ public class LdapConfig {
     @Bean(name = "outboundSslContexts")
     public Map<String, SslContext> proxySslContexts() throws Exception {
         Map<String, SslContext> sslContexts = new HashMap<>();
-        SslContext defaultLdapsContext = ldaps(); // Фоллбэк из @Bean(name = "ldaps")
+        SslContext defaultLdapsContext = ldaps();
         sslContexts.put("ldaps", defaultLdapsContext);
         logger.debug("Added fallback 'ldaps' to proxySslContexts");
 
         for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
-            String serverName = entry.getKey(); // "dc-01"
+            String serverName = entry.getKey();
             ConfigProperties.LdapServerConfig config = entry.getValue();
-            String bundleName = config.getSslBundle(); // "dc-01" или "ldaps"
+            String bundleName = config.getSslBundle();
 
             if (bundleName != null && !bundleName.equals("ldaps") && sslBundles.getBundleNames().contains(bundleName)) {
                 SslBundle sslBundle = sslBundles.getBundle(bundleName);
@@ -133,10 +131,16 @@ public class LdapConfig {
 
             if (bundleName != null && sslBundles.getBundleNames().contains(bundleName)) {
                 SslBundle sslBundle = sslBundles.getBundle(bundleName);
-                SSLContext sslContext = SSLContext.getInstance("TLS"); // most common
+                SSLContext sslContext = SSLContext.getInstance("TLS");
+                TrustManager[] trustManagers = config.isIgnoreSslVerification() ?
+                    new TrustManager[]{new X509TrustManager() {
+                        public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+                        public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+                        public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+                    }} : sslBundle.getManagers().getTrustManagers();
                 sslContext.init(
                         sslBundle.getManagers().getKeyManagers(),
-                        sslBundle.getManagers().getTrustManagers(),
+                        trustManagers,
                         new java.security.SecureRandom()
                 );
 
@@ -156,17 +160,18 @@ public class LdapConfig {
             ConfigProperties.LdapServerConfig config = entry.getValue();
 
             LdapContextSource contextSource = new LdapContextSource();
-            contextSource.setUrl(config.getUrl());
+            String url = config.getUrl();
+            contextSource.setUrl(url);
             contextSource.setUserDn(config.getUserDn());
             contextSource.setPassword(config.getPassword());
             contextSource.setBase(config.getBase());
-            System.out.println("LdapConfig: Connecting to " + config.getUrl() + " with user " + config.getUserDn());
+            System.out.println("LdapConfig: Connecting to " + url + " with user " + config.getUserDn());
 
             Map<String, Object> env = new HashMap<>();
-            boolean isLdaps = config.getUrl().toLowerCase().startsWith("ldaps://");
+            boolean isLdaps = config.isLdaps();
             if (config.isStartTls() && !isLdaps) {
                 env.put("java.naming.ldap.starttls", "true");
-                env.put("java.naming.ldap.starttls.required", String.valueOf(config.isStartTlsRequired()));
+                env.put("java.naming.ldap.starttls.required", "true");
             }
 
             String referralHandling = config.getReferralHandling();
@@ -186,80 +191,58 @@ public class LdapConfig {
             env.put("com.sun.jndi.ldap.connect.timeout", "10000");
             env.put("com.sun.jndi.ldap.read.timeout", "30000");
 
-            if (!config.isIgnoreSslVerification() && config.getSslBundle() != null) {
+            if (config.isIgnoreSslVerification()) {
+                env.put("java.naming.ldap.factory.socket", DummySSLSocketFactory.class.getName());
+            } else if (config.getSslBundle() != null) {
                 SslBundle sslBundle = sslBundles.getBundle(config.getSslBundle());
                 SSLContext sslContext = sslBundle.createSslContext();
+                env.put("java.naming.ldap.factory.socket", new SSLSocketFactory() {
+                    private final SSLSocketFactory delegate = sslContext.getSocketFactory();
+
+                    @Override
+                    public String[] getDefaultCipherSuites() {
+                        return delegate.getDefaultCipherSuites();
+                    }
+
+                    @Override
+                    public String[] getSupportedCipherSuites() {
+                        return delegate.getSupportedCipherSuites();
+                    }
+
+                    @Override
+                    public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws java.io.IOException {
+                        return delegate.createSocket(s, host, port, autoClose);
+                    }
+
+                    @Override
+                    public Socket createSocket(String host, int port) throws java.io.IOException {
+                        return delegate.createSocket(host, port);
+                    }
+
+                    @Override
+                    public Socket createSocket(String host, int port, java.net.InetAddress localHost, int localPort) throws java.io.IOException {
+                        return delegate.createSocket(host, port, localHost, localPort);
+                    }
+
+                    @Override
+                    public Socket createSocket(java.net.InetAddress host, int port) throws java.io.IOException {
+                        return delegate.createSocket(host, port);
+                    }
+
+                    @Override
+                    public Socket createSocket(java.net.InetAddress address, int port, java.net.InetAddress localAddress, int localPort) throws java.io.IOException {
+                        return delegate.createSocket(address, port, localAddress, localPort);
+                    }
+                }.getClass().getName());
             }
 
             contextSource.setBaseEnvironmentProperties(env);
-            System.out.println("LdapConfig: Attempting to initialize context for " + config.getUrl());
+            System.out.println("LdapConfig: Attempting to initialize context for " + url);
             contextSource.afterPropertiesSet();
-            System.out.println("LdapConfig: Context initialized successfully for " + config.getUrl());
+            System.out.println("LdapConfig: Context initialized successfully for " + url);
 
             templates.put(serverName, new LdapTemplate(contextSource));
         }
         return templates;
     }
-
-//    private static SSLSocketFactory getSslSocketFactory(SSLContext customContext, SSLParameters sslParams) {
-//        SSLSocketFactory baseFactory = customContext.getSocketFactory();
-//        return new SSLSocketFactory() {
-//            @Override
-//            public Socket createSocket() throws IOException {
-//                SSLSocket socket = (SSLSocket) baseFactory.createSocket();
-//                socket.setSSLParameters(sslParams);
-//                return socket;
-//            }
-//
-//            @Override
-//            public Socket createSocket(String host, int port) throws IOException {
-//                SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port);
-//                socket.setSSLParameters(sslParams);
-//                return socket;
-//            }
-//
-//            @Override
-//            public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
-//                SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port, localHost, localPort);
-//                socket.setSSLParameters(sslParams);
-//                return socket;
-//            }
-//
-//            @Override
-//            public Socket createSocket(InetAddress host, int port) throws IOException {
-//                SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port);
-//                socket.setSSLParameters(sslParams);
-//                return socket;
-//            }
-//
-//            @Override
-//            public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
-//                SSLSocket socket = (SSLSocket) baseFactory.createSocket(address, port, localAddress, localPort);
-//                socket.setSSLParameters(sslParams);
-//                return socket;
-//            }
-//
-//            @Override
-//            public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
-//                SSLSocket socket = (SSLSocket) baseFactory.createSocket(s, host, port, autoClose);
-//                socket.setSSLParameters(sslParams);
-//                return socket;
-//            }
-//
-//            @Override
-//            public String[] getDefaultCipherSuites() {
-//                return baseFactory.getDefaultCipherSuites();
-//            }
-//
-//            @Override
-//            public String[] getSupportedCipherSuites() {
-//                return baseFactory.getSupportedCipherSuites();
-//            }
-//        };
-//    }
-//
-//    @Bean(name = "dc-01")
-//    public ConfigProperties.LdapServerConfig dc01ServerConfig() {
-//        return configProperties.getLdapServerConfigs().get("dc-01");
-//    }
 }

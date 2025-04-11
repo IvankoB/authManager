@@ -33,11 +33,18 @@ public class LdapConfig {
 
     private final SslBundles sslBundles;
     private final ConfigProperties configProperties;
+//    private final Map<String, SSLContext> outboundSSLContexts;
+//    private final Map<String, Map<String, Object>> environmentMap = new HashMap<>(); // Локальное хранилище окружения
 
     @Autowired
-    public LdapConfig(SslBundles sslBundles, ConfigProperties configProperties) {
+    public LdapConfig(
+            SslBundles sslBundles,
+            ConfigProperties configProperties //,
+//            Map<String, SSLContext> outboundSSLContexts
+    ) {
         this.sslBundles = sslBundles;
         this.configProperties = configProperties;
+//        this.outboundSSLContexts = outboundSSLContexts;
     }
 
     @Bean(name = "ldaps")
@@ -156,92 +163,60 @@ public class LdapConfig {
     public Map<String, LdapTemplate> ldapTemplates() throws Exception {
         Map<String, LdapTemplate> templates = new HashMap<>();
         for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
-            String serverName = entry.getKey();
+            String serverId = entry.getKey();
             ConfigProperties.LdapServerConfig config = entry.getValue();
 
-            LdapContextSource contextSource = new LdapContextSource();
+            String host = config.getHost();
+            int port = config.isLdaps() ? config.getLdapsPort() : config.getLdapPort();
             String url = config.getUrl();
+            String userDn = config.getUserDn();
+            String userPassword = config.getPassword();
+
+            logger.info("Configuring LDAP template for server {}: url={}", serverId, url);
+
+            LdapContextSource contextSource = new LdapContextSource();
             contextSource.setUrl(url);
-            contextSource.setUserDn(config.getUserDn());
-            contextSource.setPassword(config.getPassword());
-            contextSource.setBase(config.getBase());
-            System.out.println("LdapConfig: prepared for connecting to " + url + " with user " + config.getUserDn());
+            contextSource.setUserDn(userDn);
+            contextSource.setPassword(userPassword);
+            contextSource.setReferral("follow");
 
-            Map<String, Object> env = new HashMap<>();
-            boolean isLdaps = config.isLdaps();
-            if (config.isStartTls() && !isLdaps) {
-                env.put("java.naming.ldap.starttls", "true");
-                env.put("java.naming.ldap.starttls.required", "true");
+//            // Инициализируем окружение для serverId
+//            Map<String, Object> env = environmentMap.computeIfAbsent(serverId, k -> new HashMap<>());
+
+//          Настройка SSL для LDAPS или startTLS
+//            if (config.isLdaps() || "startTLS".equalsIgnoreCase(config.getSecurity())) {
+//                try {
+//                    // Используем готовый SSLContext из outboundSSLContexts
+//                    SSLContext sslContext = outboundSSLContexts.get(serverId);
+//                    if (sslContext == null) {
+//                        logger.warn("No SSLContext found for server {}, falling back to default SSL settings", serverId);
+//                    } else {
+//                        env.put("java.naming.ldap.factory.socket", sslContext.getSocketFactory().getClass().getName());
+//                        logger.debug("Configured SSLContext for server {}", serverId);
+//                    }
+//
+//                    // Если используется startTLS, включаем его
+//                    if ("startTLS".equalsIgnoreCase(config.getSecurity())) {
+//                        env.put(Context.SECURITY_PROTOCOL, "ssl");
+//                        logger.debug("Enabled startTLS for server {}", serverId);
+//                    }
+//
+//                    // Устанавливаем окружение
+//                    contextSource.setBaseEnvironmentProperties(env);
+//                } catch (Exception e) {
+//                    logger.error("Failed to configure SSL for server {}: {}", serverId, e.getMessage(), e);
+//                }
+//            }
+
+            try {
+                logger.info("Preparing LdapContextSource for future connections to {}", url);
+                contextSource.afterPropertiesSet();
+                LdapTemplate ldapTemplate = new LdapTemplate(contextSource);
+                templates.put(serverId, ldapTemplate);
+                logger.info("LdapContextSource prepared successfully for future connections to {}", url);
+            } catch (Exception e) {
+                logger.error("Failed to initialize LdapContextSource for server {}: url={}", serverId, url, e);
             }
-
-            String referralHandling = config.getReferralHandling();
-            if (referralHandling != null && !referralHandling.isEmpty()) {
-                if ("follow".equalsIgnoreCase(referralHandling) || "ignore".equalsIgnoreCase(referralHandling) || "throw".equalsIgnoreCase(referralHandling)) {
-                    env.put(Context.REFERRAL, referralHandling.toLowerCase());
-                    System.out.println("LdapConfig: Referral handling set to " + referralHandling + " for server " + serverName);
-                } else {
-                    System.err.println("LdapConfig: Invalid referralHandling value '" + referralHandling + "' for server " + serverName + ". Using default 'follow'.");
-                    env.put(Context.REFERRAL, "follow");
-                }
-            } else {
-                env.put(Context.REFERRAL, "follow");
-                System.out.println("LdapConfig: Using default referral handling 'follow' for server " + serverName);
-            }
-
-            env.put("com.sun.jndi.ldap.connect.timeout", "10000");
-            env.put("com.sun.jndi.ldap.read.timeout", "30000");
-
-            if (config.isIgnoreSslVerification()) {
-                env.put("java.naming.ldap.factory.socket", DummySSLSocketFactory.class.getName());
-            } else if (config.getSslBundle() != null) {
-                SslBundle sslBundle = sslBundles.getBundle(config.getSslBundle());
-                SSLContext sslContext = sslBundle.createSslContext();
-                env.put("java.naming.ldap.factory.socket", new SSLSocketFactory() {
-                    private final SSLSocketFactory delegate = sslContext.getSocketFactory();
-
-                    @Override
-                    public String[] getDefaultCipherSuites() {
-                        return delegate.getDefaultCipherSuites();
-                    }
-
-                    @Override
-                    public String[] getSupportedCipherSuites() {
-                        return delegate.getSupportedCipherSuites();
-                    }
-
-                    @Override
-                    public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws java.io.IOException {
-                        return delegate.createSocket(s, host, port, autoClose);
-                    }
-
-                    @Override
-                    public Socket createSocket(String host, int port) throws java.io.IOException {
-                        return delegate.createSocket(host, port);
-                    }
-
-                    @Override
-                    public Socket createSocket(String host, int port, java.net.InetAddress localHost, int localPort) throws java.io.IOException {
-                        return delegate.createSocket(host, port, localHost, localPort);
-                    }
-
-                    @Override
-                    public Socket createSocket(java.net.InetAddress host, int port) throws java.io.IOException {
-                        return delegate.createSocket(host, port);
-                    }
-
-                    @Override
-                    public Socket createSocket(java.net.InetAddress address, int port, java.net.InetAddress localAddress, int localPort) throws java.io.IOException {
-                        return delegate.createSocket(address, port, localAddress, localPort);
-                    }
-                }.getClass().getName());
-            }
-
-            contextSource.setBaseEnvironmentProperties(env);
-            System.out.println("LdapConfig: Attempting to initialize context for " + url);
-            contextSource.afterPropertiesSet();
-            System.out.println("LdapConfig: Context initialized successfully for " + url);
-
-            templates.put(serverName, new LdapTemplate(contextSource));
         }
         return templates;
     }

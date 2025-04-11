@@ -21,13 +21,18 @@ public class LdapService {
     private static final Logger logger = LoggerFactory.getLogger(LdapService.class);
 
     private final Map<String, BaseLdapPathContextSource> contextSources;
+    private final Map<String, LdapTemplate> ldapTemplates;
 
     @Autowired
-    public LdapService(@Qualifier("customLdapContextSources") Map<String, BaseLdapPathContextSource> contextSources) {
+    public LdapService(
+        @Qualifier("customLdapContextSources") Map<String,BaseLdapPathContextSource> contextSources,
+        @Qualifier("outboundLdapTemplates") Map<String, LdapTemplate> ldapTemplates
+    ) {
         this.contextSources = contextSources;
+        this.ldapTemplates = ldapTemplates;
     }
 
-    public boolean testConnection(String serverId) {
+    public boolean testConnectionPreparedLdapCtx(String serverId) {
         logger.debug("Testing connection for server: {}", serverId);
         BaseLdapPathContextSource contextSource = contextSources.get(serverId);
         if (contextSource == null) {
@@ -63,4 +68,45 @@ public class LdapService {
         LdapTemplate ldapTemplate = new LdapTemplate(contextSource);
         return (DirContextOperations) ldapTemplate.lookup("cn=" + username + ",cn=users,dc=uwed,dc=edu");
     }
+
+    public boolean testConnection2(String serverId) {
+        LdapTemplate ldapTemplate = ldapTemplates.get(serverId);
+        if (ldapTemplate == null) {
+            logger.error("No LdapTemplate found for target: {}", serverId);
+            return false;
+        }
+
+        try {
+            //LdapContextSource contextSource = (LdapContextSource) ldapTemplate.getContextSource();
+            LdapContextSource contextSource = (LdapContextSource) ldapTemplate.getContextSource();
+            // Точка останова здесь
+            DirContext ctx = contextSource.getReadOnlyContext();
+            ctx.close();
+            logger.debug("Successfully connected to target: {}", serverId);
+            return true;
+        } catch (Exception e) {
+            logger.error("Failed to connect to target: {}", serverId, e);
+            return false;
+        }
+    }
+
+    public boolean testConnection(String serverId) {
+        BaseLdapPathContextSource contextSource = contextSources.get(serverId);
+        if (contextSource == null) {
+            logger.error("No PathContextSource found for target: {}", serverId);
+            return false;
+        }
+
+        try {
+            // Точка останова здесь
+            DirContext ctx = contextSource.getReadOnlyContext();
+            ctx.close();
+            logger.debug("Successfully connected to target: {}", serverId);
+            return true;
+        } catch (Exception e) {
+            logger.error("Failed to connect to target: {}", serverId, e);
+            return false;
+        }
+    }
+
 }

@@ -8,7 +8,14 @@ public class LdapConstants {
     // Константы для StartTLS
     public static final int START_TLS_MESSAGE_ID = 1;   // messageId для StartTLS
 
+    public static final String START_TLS_OID = "1.3.6.1.4.1.1466.20037";
+
     private LdapConstants() {
         // Приватный конструктор, чтобы предотвратить создание экземпляров
     }
+
+    public enum LDAP_PROTOCOL {
+        LDAP, LDAPS, LDAP_TLS
+    }
 }
+

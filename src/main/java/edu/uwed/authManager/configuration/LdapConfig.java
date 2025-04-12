@@ -40,8 +40,8 @@ public class LdapConfig {
         this.configProperties = configProperties;
     }
 
-    @Bean(name = "ldaps") // Переименовали
-    public SslContext ldaps() throws Exception {
+    @Bean(name = "inboundLdapSslContext") // Переименовали
+    public SslContext inboundLdapSslContext() throws Exception {
         SslBundle sslBundle = sslBundles.getBundle("ldaps");
         KeyStore keyStore = sslBundle.getStores().getKeyStore();
         String keyPassword = sslBundle.getKey().getPassword();
@@ -57,8 +57,8 @@ public class LdapConfig {
                 .build();
     }
 
-    @Bean(name = "startTlsSslContext")
-    public SSLContext startTlsSslContext() throws Exception {
+    @Bean(name = "inboundLdapTlsContext")
+    public SSLContext inboundLdapTlsContext() throws Exception {
         SslBundle sslBundle = sslBundles.getBundle("ldaps"); // Для входящих StartTLS
         KeyStore keyStore = sslBundle.getStores().getKeyStore();
         String keyPassword = sslBundle.getKey().getPassword();
@@ -70,10 +70,10 @@ public class LdapConfig {
         return sslContext;
     }
 
-    @Bean
-    public Map<String, SslContext> proxySslContexts() throws Exception {
+    @Bean(name = "outboundLdapSslContexts")
+    public Map<String, SslContext> outboundLdapSslContexts() throws Exception {
         Map<String, SslContext> sslContexts = new HashMap<>();
-        SslContext defaultLdapsContext = ldaps(); // Фоллбэк из @Bean(name = "ldaps")
+        SslContext defaultLdapsContext = inboundLdapSslContext(); // Фоллбэк из @Bean(name = "inboundLdapSslContext")
         sslContexts.put("ldaps", defaultLdapsContext);
         logger.debug("Added fallback 'ldaps' to proxySslContexts");
 
@@ -89,25 +89,22 @@ public class LdapConfig {
                 TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
                 tmf.init(sslBundle.getStores().getTrustStore());
 
-                SslContextBuilder builder = SslContextBuilder
-                        .forClient()
-                        .keyManager(kmf)
-                        .trustManager(tmf);
+                SslContextBuilder builder = SslContextBuilder.forClient().keyManager(kmf).trustManager(tmf);
 
                 if (config.getSslProtocols() != null && !config.getSslProtocols().isEmpty()) {
                     List<String> protocols = Arrays.stream(config.getSslProtocols().split(","))
-                            .map(String::trim)
-                            .filter(s -> !s.isEmpty())
-                            .collect(Collectors.toList());
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(Collectors.toList());
                     builder.protocols(protocols);
                     logger.debug("Set protocols for {}: {}", serverName, protocols);
                 }
 
                 if (config.getSslCiphers() != null && !config.getSslCiphers().isEmpty()) {
                     List<String> ciphers = Arrays.stream(config.getSslCiphers().split(","))
-                            .map(String::trim)
-                            .filter(s -> !s.isEmpty())
-                            .collect(Collectors.toList());
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(Collectors.toList());
                     builder.ciphers(ciphers);
                     logger.debug("Set ciphers for {}: {}", serverName, ciphers);
                 }
@@ -121,8 +118,8 @@ public class LdapConfig {
         return sslContexts;
     }
 
-    @Bean
-    public Map<String, SSLContext> outgoingSslContexts() throws Exception {
+    @Bean(name = "outboundLdapTlsContexts")
+    public Map<String, SSLContext> outboundLdapTlsContexts() throws Exception {
         Map<String, SSLContext> sslContexts = new HashMap<>();
         for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
             String serverName = entry.getKey();
@@ -131,33 +128,7 @@ public class LdapConfig {
 
             if (bundleName != null && sslBundles.getBundleNames().contains(bundleName)) {
                 SslBundle sslBundle = sslBundles.getBundle(bundleName);
-//                Algorithm Name 	Description
-//                SSL 	Supports some version of SSL; may support other SSL/TLS versions.
-//                SSLv2 	Supports SSL version 2 or later; may support other SSL/TLS versions.
-//                SSLv3 	Supports SSL version 3; may support other SSL/TLS versions.
-//                TLS 	Supports some version of TLS; may support other SSL/TLS versions.
-//                TLSv1 	Supports RFC 2246: TLS version 1.0; may support other SSL/TLS versions.
-//                TLSv1.1 	Supports RFC 4346: TLS version 1.1; may support other SSL/TLS versions.
-//                TLSv1.2 	Supports RFC 5246: TLS version 1.2; may support other SSL/TLS versions.
-//                TLSv1.3 	Supports RFC 8446: TLS version 1.3; may support other SSL/TLS versions.
-//                DTLS 	Supports the default provider-dependent versions of DTLS versions.
-//                DTLSv1.0 	Supports RFC 4347: DTLS version 1.0; may support other DTLS versions.
-//                DTLSv1.2 	Supports RFC 6347: DTLS version 1.2; may support other DTLS versions.
                 SSLContext sslContext = SSLContext.getInstance("TLS"); // most common
-//                SSLContext sslContext1 = SSLContext.getInstance("SSL");
-
-
-//                // Для отладки: игнорируем проверку сертификатов
-//                TrustManager[] trustAllCerts = new TrustManager[] {
-//                        new X509TrustManager() {
-//                            public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-//                                return null;
-//                            }
-//                            public void checkClientTrusted(java.security.cert.X509Certificate[] certs, String authType) {}
-//                            public void checkServerTrusted(java.security.cert.X509Certificate[] certs, String authType) {}
-//                        }
-//                };
-
                 sslContext.init(
                         sslBundle.getManagers().getKeyManagers(),
                         sslBundle.getManagers().getTrustManagers(),
@@ -172,8 +143,33 @@ public class LdapConfig {
         return sslContexts;
     }
 
-    @Bean
-    public Map<String, LdapTemplate> ldapTemplates() throws Exception {
+    @Bean(name = "outboundSslSocketFactories")
+    public Map<String, SSLSocketFactory> outboundSslSocketFactories() throws Exception {
+        Map<String, SSLSocketFactory> factories = new HashMap<>();
+        for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
+            String serverName = entry.getKey();
+            ConfigProperties.LdapServerConfig config = entry.getValue();
+            String bundleName = config.getSslBundle();
+
+            if (bundleName != null && sslBundles.getBundleNames().contains(bundleName)) {
+                SslBundle sslBundle = sslBundles.getBundle(bundleName);
+                SSLContext sslContext = SSLContext.getInstance("TLS"); // most common
+                sslContext.init(
+                        sslBundle.getManagers().getKeyManagers(),
+                        sslBundle.getManagers().getTrustManagers(),
+                        new java.security.SecureRandom()
+                );
+
+                factories.put(serverName, sslContext.getSocketFactory());
+                logger.debug("Created outgoing SSLSocketFactory for server: {}", serverName);
+            }
+        }
+        logger.info("SSLSocketFactory initialized with keys: {}", factories.keySet());
+        return factories;
+    }
+
+    @Bean(name = "outboundLdapTemplates")
+    public Map<String, LdapTemplate> outboundLdapTemplates() throws Exception {
         Map<String, LdapTemplate> templates = new HashMap<>();
         for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
             String serverName = entry.getKey();
@@ -190,7 +186,7 @@ public class LdapConfig {
             boolean isLdaps = config.getUrl().toLowerCase().startsWith("ldaps://");
             if (config.isStartTls() && !isLdaps) {
                 env.put("java.naming.ldap.starttls", "true");
-                env.put("java.naming.ldap.starttls.required", String.valueOf(config.isStartTlsRequired()));
+///// no settins anymore                env.put("java.naming.ldap.starttls.required", String.valueOf(config.isStartTlsRequired()));
             }
 
             String referralHandling = config.getReferralHandling();

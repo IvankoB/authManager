@@ -66,18 +66,37 @@ public class ConfigProperties {
 
     @Data
     public static class LdapServerConfig {
-        private String url;
+        private String host; // Заменено с name
+        private int ldapPort;
+        private int ldapsPort;
+        private String security; // none, startTLS, ldaps
         private String base;
         private String userDn;
         private String password;
         private String virtualDn;
-        private boolean startTls;
-        private boolean startTlsRequired;
         private boolean ignoreSslVerification;
         private String referralHandling;
         private String sslBundle;
         private String sslProtocols;
         private String sslCiphers;
+
+        public String getUrl() {
+            String protocol = "ldap";
+            int port = ldapPort;
+            if ("ldaps".equalsIgnoreCase(security)) {
+                protocol = "ldaps";
+                port = ldapsPort;
+            }
+            return String.format("%s://%s:%d", protocol, host, port);
+        }
+
+        public boolean isStartTls() {
+            return "startTLS".equalsIgnoreCase(security) || "tls".equalsIgnoreCase(security);
+        }
+
+        public boolean isLdaps() {
+            return "ldaps".equalsIgnoreCase(security)  || "ssl".equalsIgnoreCase(security);
+        }
     }
 
     @Data

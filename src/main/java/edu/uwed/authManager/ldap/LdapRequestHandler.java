@@ -1,13 +1,10 @@
 package edu.uwed.authManager.ldap;
 
 import com.unboundid.asn1.ASN1StreamReader;
-import com.unboundid.ldap.protocol.ExtendedRequestProtocolOp;
-import com.unboundid.ldap.protocol.ExtendedResponseProtocolOp;
-import com.unboundid.ldap.protocol.LDAPMessage;
-import com.unboundid.ldap.protocol.SearchRequestProtocolOp;
+import com.unboundid.asn1.ASN1Writer;
+import com.unboundid.ldap.protocol.*;
 import com.unboundid.ldap.sdk.*;
 import com.unboundid.ldap.sdk.extensions.StartTLSExtendedRequest;
-import com.unboundid.ldap.sdk.migrate.ldapjdk.LDAPException;
 import com.unboundid.util.ByteStringBuffer;
 import com.unboundid.util.ssl.SSLUtil;
 import edu.uwed.authManager.configuration.ConfigProperties;
@@ -25,10 +22,12 @@ import org.springframework.ldap.core.LdapTemplate;
 
 import javax.net.ssl.*;
 import java.io.ByteArrayInputStream;
-import java.util.Arrays;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
@@ -199,236 +198,174 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 targetInfo.getHost(), targetInfo.getPort(),
                 outboundSslSocketFactories.get(target)
             );
-            conn.bind(
-                configProperties.getLdapServerConfigs().get(target).getUserDn(),
-                configProperties.getLdapServerConfigs().get(target).getPassword()
-            );
-//            Channel outbound = outboundChannels.computeIfAbsent(target, t -> {
-//                try {
-//                    return
-//                    connectToTargetServer(t, configProperties.getLdapServerConfigs().get(target), ctx);
-//                } catch (Exception e) {
-//                    logger.error("Failed to connect to target: {}", t, e);
-//                    return null;
-//                }
-//            });
-//            if (outbound != null && outbound.isActive()) {
-//                logger.debug("Forwarding message to outbound channel for {}", target);
-//                outbound.writeAndFlush(msg.retain());
-//            } else {
-//                logger.error("No active outbound channel for {}", target);
-//                ctx.close();
+
+//            if (conn == null) {
+//                logger.error("Failed to establish LDAP connection for target: {}", target);
+//                sendErrorResponse(ctx, 0, ResultCode.CONNECT_ERROR);
+//                return;
 //            }
+
+            if (conn != null) {
+                ConfigProperties.LdapServerConfig serverConfig = configProperties.getLdapServerConfigs().get(target);
+                try (conn) {
+                    conn.bind(
+                        serverConfig.getUserDn(),
+                        serverConfig.getPassword()
+                    );
+
+                    // Создаем SearchRequest
+                    SearchRequest searchRequest = new SearchRequest(
+                        serverConfig.getBase(),
+                        SearchScope.SUB,
+                        "(&(sAMAccountName=ivano))",
+                        "sAMAccountName", "cn", "mail"/*,"uwedMail", "acMail"*/
+                    );
+
+                    // Получаем messageID из SearchRequest
+                    // Если messageID не задан вручную, SDK генерирует его автоматически
+                    int messageID = searchRequest.getLastMessageID();
+
+                    //////////// Создаем предикат для фильтрации
+                    Predicate<SearchResultEntry> filter = entry -> {
+                        String mail = entry.getAttributeValue("mail");
+                        String cn = entry.getAttributeValue("cn");
+                        return true;
+//                        return (mail != null && mail.contains("@example.com")) &&
+//                                (cn != null && cn.startsWith("Ivan"));
+                    };
+                    ///////////////// Создаем функцию-обработчик для модификации записи
+                    BiFunction<SearchResultEntry, Integer, LDAPMessage> entryProcessor = (entry, msgID) -> {
+                        // Извлекаем текущие атрибуты записи в Map
+                        Map<String, Attribute> updatedAttributes = entry.getAttributes().stream()
+                            .collect(Collectors.toMap(
+                                Attribute::getName,
+                                attr -> attr,
+                                (attr1, attr2) -> attr1, // В случае дубликатов берем первый атрибут
+                                HashMap::new
+                            ));
+
+//                        // Пример модификации атрибутов:
+//                        // 1. Удаляем атрибут cn
+//                        updatedAttributes.removeIf(attr -> attr.getName().equals("cn"));
+//
+//                        // 2. Изменяем атрибут mail
+//                        updatedAttributes.removeIf(attr -> attr.getName().equals("mail"));
+//                        updatedAttributes.add(new Attribute("mail", "newemail@example.com"));
+//
+//                        // 3. Добавляем новый атрибут telephoneNumber
+//                        updatedAttributes.add(new Attribute("telephoneNumber", "+1234567890"));
+
+                        updatedAttributes.put(
+                            "uwedMail",
+                            new Attribute("uwedMail", updatedAttributes.get("sAMAccountName").getValue() + "@uwed.uz")
+                        );
+                        updatedAttributes.put(
+                            "acMail",
+                            new Attribute("acMail", updatedAttributes.get("sAMAccountName").getValue() + "@uwed.ac.uz")
+                        );
+
+                        // Преобразуем Map обратно в List для создания Entry
+                        List<Attribute> updatedAttributesList = new ArrayList<>(updatedAttributes.values());
+                        // Создаем новый Entry с обновленными атрибутами
+                        Entry updatedEntry = new Entry(entry.getDN(), updatedAttributesList);
+                        // Преобразуем обновленный Entry в SearchResultEntry
+                        SearchResultEntry updatedSearchResultEntry = new SearchResultEntry(updatedEntry);
+                        // Преобразуем SearchResultEntry в SearchResultEntryProtocolOp
+                        SearchResultEntryProtocolOp entryOp = new SearchResultEntryProtocolOp(updatedSearchResultEntry);
+                        // Создаем LDAPMessage с переданным messageID
+                        return new LDAPMessage(msgID, entryOp);
+                    };
+                    ///////// Создаем SearchResultListener с предикатом, messageID и функцией-обработчиком
+                    LdapProxyStreamingSearchResultListener listener = new LdapProxyStreamingSearchResultListener(
+                        ctx,
+                        filter,
+                        entryProcessor,
+                        messageID
+                    );
+                    ////////////////////////////////////////////
+                    // Выполняем поиск
+                    // Выполняем поиск, используя параметры из SearchRequest
+                    SearchResult searchResult;
+                    try {
+                        searchResult = conn.search(
+                            listener,
+                            searchRequest.getBaseDN(),
+                            searchRequest.getScope(),
+                            searchRequest.getFilter().toString(),
+                            //searchRequest.getAttributes().toArray(new String[0])
+                            searchRequest.getAttributes()
+                    );
+                    } catch (LDAPException e) {
+                        logger.error("LDAP search failed: {}", e.getMessage());
+                        sendErrorResponse(ctx, messageID, e.getResultCode());
+                        return;
+                    }
+                    // Отправляем SearchResultDone
+                    SearchResultDoneProtocolOp doneOp = new SearchResultDoneProtocolOp(
+                        new LDAPResult(messageID,searchResult.getResultCode())
+                    );
+                    LDAPMessage doneMessage = new LDAPMessage(messageID, doneOp);
+                    byte[] doneBytes = doneMessage.encode().encode();
+                    ByteBuf doneBuf = ctx.alloc().buffer(doneBytes.length);
+                    doneBuf.writeBytes(doneBytes);
+                    ctx.writeAndFlush(doneBuf);
+                    logger.debug("Sent SearchResultDone with messageID: {}", messageID);
+
+                    // Закрываем соединение после отправки SearchResultDone
+                    ctx.close();
+                    logger.debug("Closed Netty channel after sending SearchResultDone");
+
+                    logger.info("Search completed with result: {}", searchResult.getResultCode());
+//                    SearchResult sub;
+//                    //sub = conn.search(serverConfig.getBase(), SearchScope.SUB, "(&(sAMAccountName=ivano)(password=Staff1@3))");
+//                    sub = conn.search(serverConfig.getBase(), SearchScope.SUB, "(&(sAMAccountName=ivano))");
+//                    // Список для хранения всех записей с их атрибутами
+//                    List<Map<String, List<String>>> entriesAttributes = new ArrayList<>();
+//                    for (SearchResultEntry entry : sub.getSearchEntries()) {
+//                        // Карта для хранения атрибутов одной записи (ключ => список значений)
+//                        Map<String, List<String>> attributesMap = new HashMap<>();
+//
+//                        // Извлекаем все атрибуты записи
+//                        String sAMAccoutName = entry.getAttributeValue("sAMAccountName");
+//                        for (Attribute attr : entry.getAttributes()) {
+//                            String attrName = attr.getName();
+//                            List<String> attrValues = Arrays.asList(attr.getValues());
+//                            attributesMap.put(attrName, attrValues);
+//                        }
+//                        attributesMap.put("uwedAcMail", List.of(sAMAccoutName + "@uwed.ac.uz"));
+//                        attributesMap.put("uwedMail", List.of(sAMAccoutName + "@uwed.uz"));
+//                        logger.debug("LDAP attrs are read");
+//                        // Добавляем атрибуты записи в список
+////                        entriesAttributes.add(entry.getDN(), attributesMap);
+//                    }
+
+                } catch (LDAPException e) {
+                    logger.debug("LDAP server's " + targetInfo.getUrl() +" operation error: " + e.getMessage());
+                    ctx.close();
+                }
+            }
+
+            logger.debug("LDFAP server " + target + "is bound");
         } else {
             logger.debug("StartTLS handled, waiting for next request");
         }
     }
 
-//    private Channel connectToTargetServer(String targetServer, ConfigProperties.LdapServerConfig config, ChannelHandlerContext ctx) {
-//        // Проверяем, есть ли уже канал
-//        Channel channel = channelMap.get(targetServer);
-//        if (channel != null && channel.isActive()) {
-//            return channel; // Канал уже существует и активен
-//        }
-//
-//        ConfigProperties.HostPortTuple hostPortTuple = ConfigProperties.HostPortTuple.extractHostAndPort(config.getUrl());
-//
-//        // Создаём блокировку для данного targetServer
-//        Object lock = locks.computeIfAbsent(targetServer, k -> new Object());
-//        synchronized (lock) {
-//            // Проверяем ещё раз после синхронизации
-//            channel = channelMap.get(targetServer);
-//            if (channel != null && channel.isActive()) {
-//                return channel;
-//            }
-//
-//            // Создаём новый канал
-//            Bootstrap bootstrap = new Bootstrap();
-//            bootstrap.group(ctx.channel().eventLoop())
-//                    .channel(NioSocketChannel.class)
-//                    .handler(new ChannelInitializer<SocketChannel>() {
-//                        @Override
-//                        protected void initChannel(SocketChannel ch) {
-//                            configureOutboundSsl(ch, config, hostPortTuple.getHost(), hostPortTuple.getPort(), targetServer);
-//                        }
-//                    });
-//
-//            ChannelFuture future = bootstrap.connect(hostPortTuple.getHost(), hostPortTuple.getPort());
-//            channel = future.channel();
-//            channelMap.put(targetServer, channel); // Сохраняем канал
-//
-//            future.addListener((ChannelFutureListener) f -> {
-//                if (f.isSuccess()) {
-//                    logger.info("Connected to server at {}", config.getUrl());
-//                } else {
-//                    logger.error("Failed to connect to server: {}", config.getUrl(), f.cause());
-//                    channelMap.remove(targetServer); // Удаляем канал при ошибке
-//                    ctx.close();
-//                }
-//            });
-//        }
-//        return channel;
-//    }
-//
-//    private void _configureOutboundSsl(SocketChannel ch, ConfigProperties.LdapServerConfig config, String host, int port, String targetServer) {
-//        boolean isLdaps = config.getUrl().toLowerCase().startsWith("ldaps://");
-//        SslContext targetSslContext = outboundLdapSslContexts.get(targetServer);
-//        if (targetSslContext == null && isLdaps) {
-//            targetSslContext = outboundLdapSslContexts.get("ldaps");
-//            logger.debug("Falling back to default 'ldaps' SslContext for {}", targetServer);
-//        }
-//        SSLContext targetStartTlsContext = outboundLdapTlsContexts.get(targetServer);
-//
-//        logger.debug("Configuring SSL for {}. isLdaps: {}, hasStartTls: {}, targetSslContext: {}, targetStartTlsContext: {}",
-//                targetServer, isLdaps, config.isStartTls(), targetSslContext != null, targetStartTlsContext != null);
-//
-//        if (config.isStartTls() && !isLdaps/* && targetStartTlsContext != null*/) {
-//            logger.debug("Configuring StartTLS for outbound connection to {}", targetServer);
-//            SSLEngine sslEngine = targetStartTlsContext.createSSLEngine(host, port);
-//            sslEngine.setUseClientMode(true);
-//
-//            // Создаём StartTLS-запрос с messageId = 1
-//            ByteBuf startTlsRequest = createStartTlsRequest(1);
-//
-//            if (config.getSslProtocols() != null && !config.getSslProtocols().isEmpty()) {
-//                String[] protocols = Arrays.stream(config.getSslProtocols().split(","))
-//                        .map(String::trim)
-//                        .filter(s -> !s.isEmpty())
-//                        .toArray(String[]::new);
-//                sslEngine.setEnabledProtocols(protocols);
-//                logger.debug("Set protocols for {}: {}", targetServer, Arrays.toString(protocols));
-//            }
-//
-//            if (config.getSslCiphers() != null && !config.getSslCiphers().isEmpty()) {
-//                String[] ciphers = Arrays.stream(config.getSslCiphers().split(","))
-//                        .map(String::trim)
-//                        .filter(s -> !s.isEmpty())
-//                        .toArray(String[]::new);
-//                sslEngine.setEnabledCipherSuites(ciphers);
-//                logger.debug("Set ciphers for {}: {}", targetServer, Arrays.toString(ciphers));
-//            }
-//
-//            logger.debug("Enabled protocols: {}, ciphers: {}",
-//                    Arrays.toString(sslEngine.getEnabledProtocols()), Arrays.toString(sslEngine.getEnabledCipherSuites()));
-//
-//            SslHandler sslHandler = new SslHandler(sslEngine);
-//
-//            sslHandler.setHandshakeTimeout(30_000, TimeUnit.MILLISECONDS);
-//            ch.pipeline().addLast(sslHandler);
-//            sslHandler.handshakeFuture().addListener(future -> {
-//                if (future.isSuccess()) {
-//                    logger.debug("Outbound StartTLS handshake completed with {}", targetServer);
-//                } else {
-//                    logger.error("Outbound StartTLS handshake failed for {}", targetServer, future.cause());
-//                    ch.close();
-//                }
-//            });
-//        } else if (isLdaps && targetSslContext != null) {
-//            logger.debug("Configuring LDAPS for outbound connection to {}", targetServer);
-//            ch.pipeline().addLast(targetSslContext.newHandler(ch.alloc(), host, port));
-//        } else {
-//            logger.warn("No suitable SSL configuration for server: {}. isLdaps: {}, hasStartTls: {}",
-//                    targetServer, isLdaps, config.isStartTls());
-//        }
-//    }
-//
-//    private void configureOutboundSsl(SocketChannel ch, ConfigProperties.LdapServerConfig config, String host, int port, String targetServer) {
-//        boolean isLdaps = config.getUrl().toLowerCase().startsWith("ldaps://");
-//        SslContext targetSslContext = outboundLdapSslContexts.get(targetServer);
-//        if (targetSslContext == null && isLdaps) {
-//            targetSslContext = outboundLdapSslContexts.get("ldaps");
-//            logger.debug("Falling back to default 'ldaps' SslContext for {}", targetServer);
-//        }
-//        SSLContext targetStartTlsContext = outboundLdapTlsContexts.get(targetServer);
-//
-//        logger.debug("Configuring SSL for {}. isLdaps: {}, hasStartTls: {}, targetSslContext: {}, targetStartTlsContext: {}",
-//                targetServer, isLdaps, config.isStartTls(), targetSslContext != null, targetStartTlsContext != null);
-//
-//        if (config.isStartTls() && !isLdaps /* && targetStartTlsContext != null */) {
-//            logger.debug("Configuring StartTLS for outbound connection to {}", targetServer);
-//
-//            ByteBuf startTlsRequest = createStartTlsRequest(LdapConstants.START_TLS_MESSAGE_ID);
-//
-//            ch.writeAndFlush(startTlsRequest).addListener(future -> {
-//                if (future.isSuccess()) {
-//                    logger.debug("StartTLS request sent successfully to {}", targetServer);
-//                    ch.pipeline().addLast("startTlsHandler", new SimpleChannelInboundHandler<LdapMessageDecoder.CustomLDAPMessage>() {
-//                        @Override
-//                        protected void channelRead0(ChannelHandlerContext ctx, LdapMessageDecoder.CustomLDAPMessage msg) throws Exception {
-//                            if (msg.getType() == LdapConstants.EXTENDED_RESPONSE_TYPE) {
-//                                logger.debug("Received StartTLS response: {}", msg);
-//
-//                                int resultCode = parseResultCode(msg);
-//                                if (resultCode == 0) {
-//                                    logger.info("StartTLS request accepted by {}", targetServer);
-//
-//                                    SSLEngine sslEngine = targetStartTlsContext.createSSLEngine(host, port);
-//                                    sslEngine.setUseClientMode(true);
-//
-//                                    if (config.getSslProtocols() != null && !config.getSslProtocols().isEmpty()) {
-//                                        String[] protocols = Arrays.stream(config.getSslProtocols().split(","))
-//                                                .map(String::trim)
-//                                                .filter(s -> !s.isEmpty())
-//                                                .toArray(String[]::new);
-//                                        sslEngine.setEnabledProtocols(protocols);
-//                                        logger.debug("Set protocols for {}: {}", targetServer, Arrays.toString(protocols));
-//                                    }
-//
-//                                    if (config.getSslCiphers() != null && !config.getSslCiphers().isEmpty()) {
-//                                        String[] ciphers = Arrays.stream(config.getSslCiphers().split(","))
-//                                                .map(String::trim)
-//                                                .filter(s -> !s.isEmpty())
-//                                                .toArray(String[]::new);
-//                                        sslEngine.setEnabledCipherSuites(ciphers);
-//                                        logger.debug("Set ciphers for {}: {}", targetServer, Arrays.toString(ciphers));
-//                                    }
-//
-//                                    logger.debug("Enabled protocols: {}, ciphers: {}",
-//                                            Arrays.toString(sslEngine.getEnabledProtocols()),
-//                                            Arrays.toString(sslEngine.getEnabledCipherSuites()));
-//
-//                                    SslHandler sslHandler = new SslHandler(sslEngine);
-//                                    sslHandler.setHandshakeTimeout(30_000, TimeUnit.MILLISECONDS);
-//                                    ctx.pipeline().addLast(sslHandler);
-//                                    sslHandler.handshakeFuture().addListener(future1 -> {
-//                                        if (future1.isSuccess()) {
-//                                            logger.debug("Outbound StartTLS handshake completed with {}", targetServer);
-//                                        } else {
-//                                            logger.error("Outbound StartTLS handshake failed for {}", targetServer, future1.cause());
-//                                            ctx.close();
-//                                        }
-//                                    });
-//
-//                                    ctx.pipeline().remove(this);
-//                                } else {
-//                                    logger.error("StartTLS request failed with resultCode: {} for server {}", resultCode, targetServer);
-//                                    ctx.close();
-//                                }
-//                            } else {
-//                                logger.error("Unexpected response type: {} from server {}", msg.getType(), targetServer);
-//                                ctx.close();
-//                            }
-//                        }
-//
-//                        @Override
-//                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-//                            logger.error("Error while waiting for StartTLS response from {}: {}", targetServer, cause.getMessage(), cause);
-//                            ctx.close();
-//                        }
-//                    });
-//                } else {
-//                    logger.error("Failed to send StartTLS request to {}: {}", targetServer, future.cause());
-//                    ch.close();
-//                }
-//            });
-//        } else if (isLdaps && targetSslContext != null) {
-//            logger.debug("Configuring LDAPS for outbound connection to {}", targetServer);
-//            ch.pipeline().addLast(targetSslContext.newHandler(ch.alloc(), host, port));
-//        } else {
-//            logger.warn("No suitable SSL configuration for server: {}. isLdaps: {}, hasStartTls: {}",
-//                    targetServer, isLdaps, config.isStartTls());
-//        }
-//    }
+    private void sendErrorResponse(ChannelHandlerContext ctx, int messageID, ResultCode resultCode) {
+        try {
+            SearchResultDoneProtocolOp doneOp = new SearchResultDoneProtocolOp( new LDAPResult(messageID, resultCode));
+            LDAPMessage doneMessage = new LDAPMessage(messageID, doneOp);
+            byte[] doneBytes = doneMessage.encode().encode();
+            ByteBuf doneBuf = ctx.alloc().buffer(doneBytes.length);
+            doneBuf.writeBytes(doneBytes);
+            ctx.writeAndFlush(doneBuf);
+            logger.debug("Sent error SearchResultDone with messageID: {}, resultCode: {}", messageID, resultCode);
+            ctx.close();
+        } catch (Exception e) {
+            logger.error("Failed to send error response", e);
+            ctx.close();
+        }
+    }
 
 
     private boolean checkMessageSize(ByteBuf msg) {
@@ -485,39 +422,46 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             LDAPMessage ldapMessage = LDAPMessage.readFrom(asn1Reader, true);
             int messageType = ldapMessage.getProtocolOpType();
             int messageId = ldapMessage.getMessageID();
-
             if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_EXTENDED_REQUEST) {
+
                 ExtendedRequestProtocolOp extendedOp = ldapMessage.getExtendedRequestProtocolOp();
                 if (LdapConstants.START_TLS_OID.equals(extendedOp.getOID())) {
                     logger.info("Received StartTLS request from client");
                     handleStartTls(ctx, messageId);
-                    return new TargetServerInfo(null, ldapMessage, messageType, messageId, configProperties, LdapConstants.LDAP_PROTOCOL.LDAP_TLS);
+                    return new TargetServerInfo(null, configProperties);
+                    //return new TargetServerInfo(null, configProperties, ldapMessage, messageType, messageId, LdapConstants.LDAP_PROTOCOL.LDAP_TLS);
                 }
             } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST) {
                 SearchRequestProtocolOp searchOp = ldapMessage.getSearchRequestProtocolOp();
                 String dn = searchOp.getBaseDN();
                 for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
                     if (dn.equals(entry.getValue().getVirtualDn())) {
-                        return new TargetServerInfo(entry.getKey(), ldapMessage, messageType, messageId,configProperties, LdapConstants.LDAP_PROTOCOL.LDAP);
+                        //return new TargetServerInfo(entry.getKey(), configProperties, ldapMessage, messageType, messageId,LdapConstants.LDAP_PROTOCOL.LDAP);
+                        return new TargetServerInfo(entry.getKey(), configProperties);
                     }
                 }
                 logger.warn("No remote LDAP server found for DN: {}", dn);
-                return new TargetServerInfo("dc-01", ldapMessage, messageType, messageId, configProperties, LdapConstants.LDAP_PROTOCOL.LDAP);
+                //return new TargetServerInfo("dc-01", configProperties, ldapMessage, messageType, messageId,  LdapConstants.LDAP_PROTOCOL.LDAP);
+                return new TargetServerInfo("dc-01", configProperties);
             } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST) {
                 String dn = ldapMessage.getBindRequestProtocolOp().getBindDN();
                 for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
                     if (dn.equals(entry.getValue().getVirtualDn())) {
-                        return new TargetServerInfo(entry.getKey(), ldapMessage, messageType, messageId, configProperties, LdapConstants.LDAP_PROTOCOL.LDAP);
+                        //return new TargetServerInfo(entry.getKey(), configProperties,ldapMessage, messageType, messageId, LdapConstants.LDAP_PROTOCOL.LDAP);
+                        return new TargetServerInfo(entry.getKey(), configProperties);
                     }
                 }
                 logger.warn("No remote LDAP server found for bind DN: {}", dn);
-                return new TargetServerInfo("dc-01", ldapMessage, messageType, messageId, configProperties, LdapConstants.LDAP_PROTOCOL.LDAP);
+                //return new TargetServerInfo("dc-01", configProperties, ldapMessage, messageType, messageId, LdapConstants.LDAP_PROTOCOL.LDAP);
+                return new TargetServerInfo("dc-01", configProperties);
             }
             logger.debug("Unhandled message type: {}", messageType);
-            return new TargetServerInfo("dc-01", ldapMessage, messageType, messageId, configProperties, LdapConstants.LDAP_PROTOCOL.LDAP);
+            //return new TargetServerInfo("dc-01", configProperties,ldapMessage, messageType, messageId, LdapConstants.LDAP_PROTOCOL.LDAP);
+            return new TargetServerInfo("dc-01", configProperties);
         } catch (Exception e) {
             logger.error("Failed to parse LDAP request", e);
-            return new TargetServerInfo("dc-01", null, -1, -1, configProperties, LdapConstants.LDAP_PROTOCOL.LDAP);
+            //return new TargetServerInfo("dc-01", configProperties, null, -1, -1, LdapConstants.LDAP_PROTOCOL.LDAP);
+            return new TargetServerInfo("dc-01", configProperties);
         }
     }
 

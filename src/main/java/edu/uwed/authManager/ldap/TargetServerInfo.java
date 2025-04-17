@@ -3,12 +3,14 @@ package edu.uwed.authManager.ldap;
 import com.unboundid.ldap.protocol.LDAPMessage;
 import edu.uwed.authManager.configuration.ConfigProperties;
 import lombok.Data;
+import lombok.Getter;
 import org.apache.logging.log4j.util.Strings;
 
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -26,9 +28,28 @@ public class TargetServerInfo {
     private String url;
 
     private String _host;
-    private String _scheme;
     private int _port;
-    private boolean _secure;
+
+    @Getter
+    private String scheme;
+
+    @Getter
+    private boolean secure;
+
+//    @Getter
+//    private int ldapProtoOpType;
+
+//    @Getter
+//    private boolean isProxyUser;
+
+//    @Getter
+//    private boolean authorized;
+
+    @Getter
+    LdapConstants.BIND_STATUS bindStatus;
+
+    @Getter
+    Set<String> allowedSearchServers;
 
     private final ConfigProperties configProperties;
 
@@ -67,10 +88,20 @@ public class TargetServerInfo {
 
     public TargetServerInfo(
             String target,
+            int ldapProtoOpType,
+//            boolean isProxyUser,
+//            boolean authorized,
+            LdapConstants.BIND_STATUS bindStatus,
+            Set<String> allowedSearchServers,
             ConfigProperties configProperties
     ) {
         this.target = target;
         this.configProperties = configProperties;
+//        this.ldapProtoOpType = ldapProtoOpType;
+  //      this.isProxyUser = isProxyUser;
+//        this.authorized = authorized;
+        this.bindStatus = bindStatus;
+        this.allowedSearchServers = allowedSearchServers;
         if (target != null) {
             ConfigProperties.LdapServerConfig config = configProperties.getLdapServerConfigs().get(target);
             if (config != null) {
@@ -89,14 +120,14 @@ public class TargetServerInfo {
                 }
                 if (Stream.of("ssl","ldaps").map(String::toLowerCase).toList().contains(security.toLowerCase())) {
                     this.url = "ldaps://" + config.getHost() + ":" + ldapsPort;
-                    this._secure = true;
+                    this.secure = true;
                 } else
                 if (Stream.of("tls","starttls").map(String::toLowerCase).toList().contains(security.toLowerCase())) {
                     this.url = "ldap://" + config.getHost() + ":" + ldapPort;
-                    this._secure = true;
+                    this.secure = true;
                 } else {
                     this.url = "ldap://" + config.getHost() + ":" + ldapPort;
-                    this._secure = false;
+                    this.secure = false;
                 }
             }
             URI uri;
@@ -104,7 +135,7 @@ public class TargetServerInfo {
                 uri = new URI(this.url);
                 this._host = uri.getHost();
                 this._port = uri.getPort();
-                this._scheme = uri.getScheme();
+                this.scheme = uri.getScheme();
             } catch (URISyntaxException e) {
                 throw new RuntimeException("Unable to parse this URL: " + this.url + " because of: " + e);
             }
@@ -117,22 +148,18 @@ public class TargetServerInfo {
     public int getPort() {
         return this._port;
     }
-    public String getScheme() {
-        return this._scheme;
-    }
+
     public  LdapConstants.LDAP_PROTOCOL getProto() {
         if (isStartTls()) return LdapConstants.LDAP_PROTOCOL.LDAP_TLS;
         if (isLdaps()) return LdapConstants.LDAP_PROTOCOL.LDAPS;
         return LdapConstants.LDAP_PROTOCOL.LDAP;
     }
-    public  boolean isSecure() {
-        return this._secure;
-    }
+
     public boolean isStartTls() {
-        return this._secure && this._scheme.equals("ldap");
+        return this.secure && this.scheme.equals("ldap");
     }
     public boolean isLdaps() {
-        return this._secure && this._scheme.equals("ldaps");
+        return this.secure && this.scheme.equals("ldaps");
     }
 
 }

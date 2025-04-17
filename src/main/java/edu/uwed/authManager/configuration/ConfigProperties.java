@@ -73,7 +73,8 @@ public class ConfigProperties {
         private String base;
         private String userDn;
         private String password;
-        private String virtualDn;
+//        private String virtualDn;
+        private String virtualBase;
         private boolean ignoreSslVerification;
         private String referralHandling;
         private String sslBundle;
@@ -103,7 +104,8 @@ public class ConfigProperties {
     public static class ProxyUser {
         private String dn;
         private String password;
-        private List<String> allowedDns;
+//        private List<String> allowedDns;
+        private List<String> allowedSearchServers;
     }
 
     @Data

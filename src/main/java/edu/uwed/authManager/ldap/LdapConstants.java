@@ -17,5 +17,9 @@ public class LdapConstants {
     public enum LDAP_PROTOCOL {
         LDAP, LDAPS, LDAP_TLS
     }
+
+    public enum BIND_STATUS {
+        NONE, SUCCESS, UPLINK, FAILURE
+    }
 }
 

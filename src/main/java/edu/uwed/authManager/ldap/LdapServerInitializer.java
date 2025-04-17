@@ -47,7 +47,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
     @Override
     protected void initChannel(SocketChannel ch) {
         ChannelPipeline pipeline = ch.pipeline();
-        if (useSsl) {
+        if (useSsl) { // если канал настроен на LDAPS-коеннекты, то начинать соединения с утряски SSL
             pipeline.addLast(inboundLdapSslContext.newHandler(ch.alloc()));
         }
         pipeline.addLast(new LdapRequestHandler(

@@ -16,6 +16,8 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
+import lombok.AllArgsConstructor;
+import lombok.Data;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ldap.core.LdapTemplate;
@@ -30,6 +32,82 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
+
+    @Data
+    @AllArgsConstructor
+    public static class ConnectionBinding {
+        private ChannelHandlerContext downlink;
+        private LDAPConnection uplink;
+        private boolean downlinkAuthorized;
+        private boolean uplinkAuthorized;
+//        private boolean authorized;
+    }
+
+    //private ConcurrentHashMap<String,List<ConnectionBinding>> connectionBindings = new ConcurrentHashMap<>();
+    private HashMap<String,List<ConnectionBinding>> connectionBindings = new HashMap<>();
+
+    private void deleteBindings4Downlink(ChannelHandlerContext downlink) {
+        if (! connectionBindings.isEmpty()) {
+            for (Map.Entry<String, List<ConnectionBinding>> entry : connectionBindings.entrySet()) {
+                for (ConnectionBinding connectionBinding : entry.getValue()) {
+                    if (connectionBinding.downlink == downlink) {
+                        if (connectionBinding.uplink != null) {
+                            connectionBinding.uplink.close();
+                            connectionBinding.uplink = null;
+                        }
+                        if (connectionBinding.downlink != null) {
+                            connectionBinding.downlink.close();
+                            connectionBinding.downlink = null;
+                        }
+                    }
+                }
+                entry.getValue().removeIf( cb -> (cb.downlink == null) && (cb.uplink == null)); // удалить пустые "connectionBinding" из списка
+            }
+            connectionBindings.values().removeIf(List::isEmpty); // удалить пустые "connectionBinding" из списка
+        }
+    }
+
+    private void deleteBindings4Uplink(LDAPConnection uplink) {
+        if (! connectionBindings.isEmpty()) {
+            for (Map.Entry<String, List<ConnectionBinding>> entry : connectionBindings.entrySet()) {
+                for (ConnectionBinding connectionBinding : entry.getValue()) {
+                    if (connectionBinding.uplink == uplink) {
+                        if (connectionBinding.downlink != null) {
+                            connectionBinding.downlink.close();
+                        }
+                        if (connectionBinding.uplink != null) {
+                            connectionBinding.uplink.close();
+                        }
+                        connectionBinding = null;
+                    }
+                }
+                entry.getValue().removeIf( cb -> (cb.downlink == null) && (cb.uplink == null)); // удалить пустые "connectionBinding" из списка
+            }
+            connectionBindings.values().removeIf(List::isEmpty); // удалить пустые "connectionBinding" из списка
+        }
+    }
+    private ConnectionBinding findByDownlink(String target,ChannelHandlerContext downlink) {
+        for (ConnectionBinding entry : connectionBindings.get(target)) {
+            if (entry.downlink == downlink) {
+                return entry;
+            }
+        }
+        return null;
+    }
+    private ConnectionBinding findByUplink(String target,LDAPConnection uplink) {
+        for (ConnectionBinding entry : connectionBindings.get(target)) {
+            if (entry.uplink == uplink) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+//    private boolean onlyLocalChannel() {
+//        return connectionBindings.isEmpty();
+//        return false
+//    }
+
 
     private final ConfigProperties configProperties;
     private final SslContext inboundLdapSslContext;
@@ -66,6 +144,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         this.outboundSslSocketFactories = outboundSslSocketFactories;
     }
 
+    // защищенный канал с клиентом : наш ответ "TLS ОК" клиенту и ожидание подтверждения от него
     private void sendStartTlsResponse(ChannelHandlerContext ctx, int messageId) {
         logger.debug("Sending StartTLS response");
         ExtendedResponseProtocolOp responseOp = new ExtendedResponseProtocolOp(
@@ -88,6 +167,9 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         });
     }
 
+
+    // защищенный канал с клиентом : отравка согласия на TLS-сессию с нашим сертификатом и поддерживаемыми нами протоколами,
+    // и ожидание подтверждения от клиента после проверки наших реквизитов на его стороне
     private void handleStartTls(ChannelHandlerContext ctx, int messageId) throws Exception {
         logger.debug("Handling StartTLS request");
         sendStartTlsResponse(ctx, messageId);
@@ -184,6 +266,16 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             return;
         }
 
+//        if (connectionBindings.isEmpty()) {
+//            connectionBindings.put(null, null);
+//        }
+//        if (findByDownlink(null,ctx) == null) { // первый запрос в канал
+//            connectionBindings.put(
+//                null,
+//                List.of(new ConnectionBinding(ctx,null, false,false))
+//            );
+//        }
+
         TargetServerInfo targetInfo = negotiateTargetServer(ctx, msg);
         String target = targetInfo.getTarget();
 
@@ -191,7 +283,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 //        String target = negotiateTargetServer(ctx, msg);
 
         logger.debug("Negotiated target server: {}", target);
-        if (target != null) {
+        if (target != null) { // если прошли авторизацию на прокси
 
             LDAPConnection conn = getLdapConnection(
                 targetInfo.getProto(),
@@ -199,11 +291,11 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                 outboundSslSocketFactories.get(target)
             );
 
-//            if (conn == null) {
-//                logger.error("Failed to establish LDAP connection for target: {}", target);
-//                sendErrorResponse(ctx, 0, ResultCode.CONNECT_ERROR);
-//                return;
-//            }
+            if (conn == null) {
+                logger.error("Failed to establish LDAP connection for target: {}", target);
+                sendErrorResponse(ctx, 0, ResultCode.CONNECT_ERROR);
+                return;
+            }
 
             if (conn != null) {
                 ConfigProperties.LdapServerConfig serverConfig = configProperties.getLdapServerConfigs().get(target);
@@ -414,6 +506,9 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         return resultCode;
     }
 
+    // Определить применительно к какому серверу выполнять последующие LDAP-операции :
+    // TargetServerInfo.target = null => применительно к данному прокси
+    // TargetServerInfo.target != null => применительно к удаленному серверу
     private TargetServerInfo negotiateTargetServer(ChannelHandlerContext ctx, ByteBuf msg) {
         try {
             byte[] bytes = new byte[msg.readableBytes()];
@@ -422,46 +517,110 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             LDAPMessage ldapMessage = LDAPMessage.readFrom(asn1Reader, true);
             int messageType = ldapMessage.getProtocolOpType();
             int messageId = ldapMessage.getMessageID();
-            if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_EXTENDED_REQUEST) {
 
+            if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_EXTENDED_REQUEST) { // specific LDAP-startTLS request from a client
                 ExtendedRequestProtocolOp extendedOp = ldapMessage.getExtendedRequestProtocolOp();
                 if (LdapConstants.START_TLS_OID.equals(extendedOp.getOID())) {
                     logger.info("Received StartTLS request from client");
                     handleStartTls(ctx, messageId);
-                    return new TargetServerInfo(null, configProperties);
+                    return new TargetServerInfo(null, messageType, LdapConstants.BIND_STATUS.NONE, null,configProperties);
                     //return new TargetServerInfo(null, configProperties, ldapMessage, messageType, messageId, LdapConstants.LDAP_PROTOCOL.LDAP_TLS);
                 }
-            } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST) {
+            } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST) { // search request to the proxy from a client
                 SearchRequestProtocolOp searchOp = ldapMessage.getSearchRequestProtocolOp();
                 String dn = searchOp.getBaseDN();
                 for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
                     if (dn.equals(entry.getValue().getVirtualDn())) {
                         //return new TargetServerInfo(entry.getKey(), configProperties, ldapMessage, messageType, messageId,LdapConstants.LDAP_PROTOCOL.LDAP);
-                        return new TargetServerInfo(entry.getKey(), configProperties);
+                        return new TargetServerInfo(entry.getKey(), messageType, configProperties);
                     }
                 }
                 logger.warn("No remote LDAP server found for DN: {}", dn);
                 //return new TargetServerInfo("dc-01", configProperties, ldapMessage, messageType, messageId,  LdapConstants.LDAP_PROTOCOL.LDAP);
-                return new TargetServerInfo("dc-01", configProperties);
-            } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST) {
-                String dn = ldapMessage.getBindRequestProtocolOp().getBindDN();
+                return new TargetServerInfo("dc-01", messageType, configProperties);
+
+            } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST) { // bind authorization request to the proxy from a client
+
+                String dn = ldapMessage.getBindRequestProtocolOp().getBindDN/* -D <xxx> в LDAPSEARCH */();
+                String password = ldapMessage.getBindRequestProtocolOp().getSimplePassword().stringValue();
+
+                List<ConfigProperties.ProxyUser> proxyUsers = configProperties.getProxyUsers();
+
+                for (ConfigProperties.ProxyUser proxyUser : proxyUsers) {
+                    // если полученный от клиента пользователь есть в списке пользователей прокси
+                    if (proxyUser.getDn().equals(dn)) {
+                        // и его пароль совпал с ожидаемым
+                        if (proxyUser.getPassword().equals(password)) {
+                            Set<String> allowedServers = new HashSet<>();
+                            // если данному прокси-пользователю разрешен поиск на всех серверах и список серверов не пуст
+                            if (proxyUser.getAllowedSearchServers().contains("*") && (!configProperties.getLdapServerConfigs().isEmpty())) {
+                                // добавляем все сервера в список разрешенных
+                                allowedServers.addAll(configProperties.getLdapServerConfigs().keySet());
+                            } else { // иначе будем проверять разрешение по каждому серверу
+                                for (String allowedServer:  proxyUser.getAllowedSearchServers()) {
+                                    if (configProperties.getLdapServerConfigs().containsKey(allowedServer)) {
+                                        allowedServers.add(allowedServer);
+                                    }
+                                }
+                            }
+                            if (!allowedServers.isEmpty()) {
+                                return new TargetServerInfo(
+                                    null, messageType, LdapConstants.BIND_STATUS.SUCCESS, allowedServers, configProperties
+                                );
+                            }
+                            logger.warn("Proxy user " + proxyUser.getDn() + " matches its password but doesn't have server(s) allowed to search", dn);
+                        } else {
+                            // если пароль не совпал - возвращаем результат с кодом ошибки
+                            logger.warn("The supplied password of proxy user " + proxyUser.getDn() + " doesn't match", dn);
+                            return new TargetServerInfo(
+                                null, messageType, LdapConstants.BIND_STATUS.FAILURE, null, configProperties
+                            );
+                        }
+                    }
+                }
+                // раз дошли сюда, то значит пользователь не является пользователем прокси и нужно передать его на авторизацию на внешнем сервере.
+                //
+                List<String> virtualBases= configProperties.getLdapServerConfigs().values().stream()
+                    .map(ConfigProperties.LdapServerConfig::getVirtualBase)
+                    .filter(dn::endsWith)
+                    .toList();
+                if (virtualBases.isEmpty()) {
+                    logger.warn("The supplied password of proxy user " + proxyUser.getDn() + " doesn't match", dn);
+                    return new TargetServerInfo(
+                        null, messageType, LdapConstants.BIND_STATUS.FAILURE, null, configProperties
+                    );
+                } else
+                if (virtualBases.size() == 1) {
+                    return new TargetServerInfo(
+                        virtualBases.getFirst(), messageType, LdapConstants.BIND_STATUS.UPLINK, null, configProperties
+                    );
+                } else {
+                    return new TargetServerInfo(
+                            virtualBases.getFirst(), messageType, LdapConstants.BIND_STATUS.UPLINK, null, configProperties
+                    );
+                }
+
+                String dn = ldapMessage.getBindRequestProtocolOp().getBindDN/* -D <xxx> в LDAPSEARCH */();
+
+                String password = ldapMessage.getBindRequestProtocolOp().getSimplePassword().stringValue();
+
                 for (Map.Entry<String, ConfigProperties.LdapServerConfig> entry : configProperties.getLdapServerConfigs().entrySet()) {
                     if (dn.equals(entry.getValue().getVirtualDn())) {
                         //return new TargetServerInfo(entry.getKey(), configProperties,ldapMessage, messageType, messageId, LdapConstants.LDAP_PROTOCOL.LDAP);
-                        return new TargetServerInfo(entry.getKey(), configProperties);
+                        return new TargetServerInfo(entry.getKey(), messageType, configProperties);
                     }
                 }
                 logger.warn("No remote LDAP server found for bind DN: {}", dn);
                 //return new TargetServerInfo("dc-01", configProperties, ldapMessage, messageType, messageId, LdapConstants.LDAP_PROTOCOL.LDAP);
-                return new TargetServerInfo("dc-01", configProperties);
+                return new TargetServerInfo("dc-01", messageType, configProperties);
             }
             logger.debug("Unhandled message type: {}", messageType);
             //return new TargetServerInfo("dc-01", configProperties,ldapMessage, messageType, messageId, LdapConstants.LDAP_PROTOCOL.LDAP);
-            return new TargetServerInfo("dc-01", configProperties);
+            return new TargetServerInfo("dc-01", messageType, configProperties);
         } catch (Exception e) {
             logger.error("Failed to parse LDAP request", e);
             //return new TargetServerInfo("dc-01", configProperties, null, -1, -1, LdapConstants.LDAP_PROTOCOL.LDAP);
-            return new TargetServerInfo("dc-01", configProperties);
+            return new TargetServerInfo("dc-01",  LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST, configProperties);
         }
     }
 

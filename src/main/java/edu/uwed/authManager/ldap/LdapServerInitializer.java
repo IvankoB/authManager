@@ -13,33 +13,24 @@ import java.util.Map;
 public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
 
     private final ConfigProperties configProperties;
-    private final SslContext inboundLdapSslContext;
-    private final Map<String, LdapTemplate> outboundLdapTemplates;
-    private final Map<String, SslContext> outboundLdapSslContexts;
-    private final SSLContext inboundLdapTlsContext;
-    private final Map<String, SSLContext> outboundLdapTlsContexts;
-    private final Map<String, SSLSocketFactory> outboundSslSocketFactories;
+    private final SslContext proxySslContext;
+    private final SSLContext proxyTlsContext;
+    private final SSLSocketFactory targetSecureSocketFactory;
     private final boolean useSsl;
     private final long maxMessageSize;
 
     public LdapServerInitializer(
             ConfigProperties configProperties,
-            SslContext inboundLdapSslContext,
-            SSLContext inboundLdapTlsContext,
-            Map<String, SslContext> outboundLdapSslContexts,
-            Map<String, SSLContext> outboundLdapTlsContexts,
-            Map<String, LdapTemplate> outboundLdapTemplates,
-            Map<String, SSLSocketFactory> outboundSslSocketFactories,
+            SslContext proxySslContext,
+            SSLContext proxyTlsContext,
+            SSLSocketFactory targetSecureSocketFactory,
             boolean useSsl,
             long maxMessageSize
     ) {
         this.configProperties = configProperties;
-        this.inboundLdapSslContext = inboundLdapSslContext;
-        this.outboundLdapTemplates = outboundLdapTemplates;
-        this.outboundLdapSslContexts = outboundLdapSslContexts;
-        this.inboundLdapTlsContext = inboundLdapTlsContext;
-        this.outboundLdapTlsContexts = outboundLdapTlsContexts;
-        this.outboundSslSocketFactories = outboundSslSocketFactories;
+        this.proxySslContext = proxySslContext;
+        this.proxyTlsContext = proxyTlsContext;
+        this.targetSecureSocketFactory = targetSecureSocketFactory;
         this.useSsl = useSsl;
         this.maxMessageSize = maxMessageSize;
     }
@@ -48,19 +39,12 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
     protected void initChannel(SocketChannel ch) {
         ChannelPipeline pipeline = ch.pipeline();
         if (useSsl) { // если канал настроен на LDAPS-коеннекты, то начинать соединения с утряски SSL
-            pipeline.addLast(inboundLdapSslContext.newHandler(ch.alloc()));
+            pipeline.addLast(proxySslContext.newHandler(ch.alloc()));
         }
         pipeline.addLast(new LdapRequestHandler(
-            configProperties, inboundLdapSslContext, inboundLdapTlsContext, outboundLdapSslContexts, outboundLdapTlsContexts, outboundLdapTemplates,outboundSslSocketFactories
+            configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory, maxMessageSize
         ));
     }
 
-/*    ConfigProperties configProperties,
-    SslContext inboundLdapSslContext,
-    SSLContext inboundLdapTlsContext,
-    Map<String, SslContext> outboundLdapSslContexts,
-    Map<String, SSLContext> outboundLdapTlsContexts,
-    Map<String, LdapTemplate> outboundLdapTemplates
- */
 
 }

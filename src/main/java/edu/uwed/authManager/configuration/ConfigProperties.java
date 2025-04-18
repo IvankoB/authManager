@@ -47,12 +47,6 @@ local.proxy-users[1].allowed-dns[0]=dc=dc-01,dc=proxy,dc=local
 public class ConfigProperties {
 
     @Bean
-    @ConfigurationProperties(prefix = "local.ldap.servers")
-    public Map<String, LdapServerConfig> getLdapServerConfigs() {
-        return new HashMap<>();
-    }
-
-    @Bean
     @ConfigurationProperties(prefix = "local.ldap.proxy.users")
     public List<ProxyUser> getProxyUsers() {
         return new ArrayList<>();
@@ -64,48 +58,49 @@ public class ConfigProperties {
         return new ProxyConfig();
     }
 
-    @Data
-    public static class LdapServerConfig {
-        private String host; // Заменено с name
-        private int ldapPort;
-        private int ldapsPort;
-        private String security; // none, startTLS, ldaps
-        private String base;
-        private String userDn;
-        private String password;
-//        private String virtualDn;
-        private String virtualBase;
-        private boolean ignoreSslVerification;
-        private String referralHandling;
-        private String sslBundle;
-        private String sslProtocols;
-        private String sslCiphers;
-
-        public String getUrl() {
-            String protocol = "ldap";
-            int port = ldapPort;
-            if ("ldaps".equalsIgnoreCase(security)) {
-                protocol = "ldaps";
-                port = ldapsPort;
-            }
-            return String.format("%s://%s:%d", protocol, host, port);
-        }
-
-        public boolean isStartTls() {
-            return "startTLS".equalsIgnoreCase(security) || "tls".equalsIgnoreCase(security);
-        }
-
-        public boolean isLdaps() {
-            return "ldaps".equalsIgnoreCase(security)  || "ssl".equalsIgnoreCase(security);
-        }
+    @Bean
+    @ConfigurationProperties(prefix = "local.ldap.target")
+    public TargetConfig getTargetConfig() {
+        return new TargetConfig();
     }
+
+    @Data
+    public static class TargetConfig {
+            private String host; // Заменено с name
+            private int ldapPort;
+            private int ldapsPort;
+            private String security; // none, startTLS, ldaps
+            private String userDn;
+            private String password;
+            private boolean ignoreSslVerification;
+            private String referralHandling;
+            private String sslBundle;
+            private String sslProtocols;
+            private String sslCiphers;
+
+            public String getUrl() {
+                String protocol = "ldap";
+                int port = ldapPort;
+                if ("ldaps".equalsIgnoreCase(security)) {
+                    protocol = "ldaps";
+                    port = ldapsPort;
+                }
+                return String.format("%s://%s:%d", protocol, host, port);
+            }
+
+            public boolean isStartTls() {
+                return "startTLS".equalsIgnoreCase(security) || "tls".equalsIgnoreCase(security);
+            }
+
+            public boolean isLdaps() {
+                return "ldaps".equalsIgnoreCase(security)  || "ssl".equalsIgnoreCase(security);
+            }
+        }
 
     @Data
     public static class ProxyUser {
         private String dn;
         private String password;
-//        private List<String> allowedDns;
-        private List<String> allowedSearchServers;
     }
 
     @Data

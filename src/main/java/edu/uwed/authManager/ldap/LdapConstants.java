@@ -19,7 +19,12 @@ public class LdapConstants {
     }
 
     public enum BIND_STATUS {
-        NONE, SUCCESS, UPLINK, FAILURE
+        NONE, SUCCESS, FAILURE, TARGET
     }
+
+    public enum PROXY_ENDPOINT {
+        NONE, PROXY, TARGET
+    }
+
 }
 

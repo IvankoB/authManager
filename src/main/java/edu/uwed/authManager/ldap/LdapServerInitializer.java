@@ -16,6 +16,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
     private final SslContext proxySslContext;
     private final SSLContext proxyTlsContext;
     private final SSLSocketFactory targetSecureSocketFactory;
+    private final LDAPConnectionPoolFactory targetConnectionPoolFactory;
     private final boolean useSsl;
     private final long maxMessageSize;
 
@@ -24,6 +25,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
             SslContext proxySslContext,
             SSLContext proxyTlsContext,
             SSLSocketFactory targetSecureSocketFactory,
+            LDAPConnectionPoolFactory targetConnectionPoolFactory,
             boolean useSsl,
             long maxMessageSize
     ) {
@@ -31,6 +33,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
         this.proxySslContext = proxySslContext;
         this.proxyTlsContext = proxyTlsContext;
         this.targetSecureSocketFactory = targetSecureSocketFactory;
+        this.targetConnectionPoolFactory = targetConnectionPoolFactory;
         this.useSsl = useSsl;
         this.maxMessageSize = maxMessageSize;
     }
@@ -42,7 +45,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
             pipeline.addLast(proxySslContext.newHandler(ch.alloc()));
         }
         pipeline.addLast(new LdapRequestHandler(
-            configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory, maxMessageSize
+            configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory, targetConnectionPoolFactory, maxMessageSize
         ));
     }
 

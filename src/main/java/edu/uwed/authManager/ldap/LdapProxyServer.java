@@ -26,6 +26,7 @@ public class LdapProxyServer {
     private final SslContext proxySslContext;
     private final SSLContext proxyTlsContext;
     private final SSLSocketFactory targetSecureSocketFactory;
+    private final LDAPConnectionPoolFactory targetConnectionPoolFactory;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -37,12 +38,14 @@ public class LdapProxyServer {
             ConfigProperties configProperties,
             @Qualifier("proxyLdapSslContext") SslContext proxySslContext,
             @Qualifier("proxyLdapTlsContext") SSLContext proxyTlsContext,
-            @Qualifier("targetLdapSecureSocketFactory") SSLSocketFactory targetSecureSocketFactory
+            @Qualifier("targetLdapSecureSocketFactory") SSLSocketFactory targetSecureSocketFactory,
+            @Qualifier("targetLdapConnectionPoolFactory") LDAPConnectionPoolFactory targetConnectionPoolFactory
     ) {
         this.configProperties = configProperties;
         this.proxySslContext = proxySslContext;
         this.proxyTlsContext = proxyTlsContext;
         this.targetSecureSocketFactory = targetSecureSocketFactory;
+        this.targetConnectionPoolFactory = targetConnectionPoolFactory;
     }
 
     @PostConstruct
@@ -59,7 +62,7 @@ public class LdapProxyServer {
         ldapBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,false, maxMessageSize
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,false, maxMessageSize
                 ))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);
@@ -69,13 +72,13 @@ public class LdapProxyServer {
         ldapsBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,true, maxMessageSize
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,true, maxMessageSize
                 ))
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,true, maxMessageSize
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,true, maxMessageSize
                 ))
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,true, maxMessageSize
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,true, maxMessageSize
                 ))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);

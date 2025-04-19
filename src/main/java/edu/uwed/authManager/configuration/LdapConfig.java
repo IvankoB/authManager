@@ -1,13 +1,18 @@
 package edu.uwed.authManager.configuration;
 
+import com.unboundid.ldap.sdk.LDAPConnection;
+import edu.uwed.authManager.ldap.LDAPConnectionPoolFactory;
 import edu.uwed.authManager.ldap.LdapProxyServer;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.ssl.SslBundle;
 import org.springframework.boot.ssl.SslBundles;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import com.unboundid.ldap.sdk.LDAPConnectionPool;
 
 import javax.net.ssl.*;
 import java.security.KeyStore;
@@ -75,6 +80,13 @@ public class LdapConfig {
             return sslContext.getSocketFactory();
         }
         return null;
+    }
+
+    @Bean(name = "targetLdapConnectionPoolFactory")
+    public LDAPConnectionPoolFactory targetLdapConnectionPoolFactory(
+        @Qualifier("targetLdapSecureSocketFactory") SSLSocketFactory socketFactory
+    ) {
+        return new LDAPConnectionPoolFactory(configProperties, socketFactory);
     }
 
 }

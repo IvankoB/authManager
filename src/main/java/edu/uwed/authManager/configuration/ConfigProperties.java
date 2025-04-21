@@ -77,6 +77,7 @@ public class ConfigProperties {
             private String sslBundle;
             private String sslProtocols;
             private String sslCiphers;
+            private List<LocalAttribute> localAttributes = new ArrayList<>();
 
             public String getUrl() {
                 String protocol = "ldap";
@@ -151,6 +152,13 @@ public class ConfigProperties {
                 throw new IllegalArgumentException("Invalid URL format in LdapServerConfig: " + url, e);
             }
         }
+    }
+
+    @Data
+    public static class LocalAttribute {
+        private String name;
+        private String searchExpression;
+        private String resultExpression;
     }
 
 }

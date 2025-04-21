@@ -30,6 +30,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final SSLContext proxyTlsContext;
     private final SSLSocketFactory targetSecureSocketFactory;
     private final LDAPConnectionPoolFactory targetConnectionPoolFactory;
+    private final LdapSearchMITM ldapSearchMITM; // Новый член класса
     private final long maxMessageSize;
 
     private Channel proxyChannel = null;
@@ -44,6 +45,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             SSLContext proxyTlsContext,
             SSLSocketFactory targetSecureSocketFactory,
             LDAPConnectionPoolFactory targetConnectionPoolFactory,
+            LdapSearchMITM ldapSearchMITM,
             long maxMessageSize
     ) {
         this.configProperties = configProperties;
@@ -51,6 +53,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         this.proxyTlsContext = proxyTlsContext;
         this.targetSecureSocketFactory = targetSecureSocketFactory;
         this.targetConnectionPoolFactory = targetConnectionPoolFactory;
+        this.ldapSearchMITM = ldapSearchMITM;
         this.maxMessageSize = maxMessageSize;
     }
 
@@ -110,22 +113,25 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                             ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
                             conn.bind(targetConfig.getUserDn(), targetConfig.getPassword());
 
+                            Filter originalFilter = ldapMessage.getSearchRequestProtocolOp().getFilter();
+                            Filter enhancedFilter = ldapSearchMITM.generateLdapFilter(originalFilter);
+
+                            // Исправленный конструктор SearchRequest
                             SearchRequest searchRequest = new SearchRequest(
-                                    ldapMessage.getSearchRequestProtocolOp().getBaseDN(),
-                                    ldapMessage.getSearchRequestProtocolOp().getScope(),
-                                    ldapMessage.getSearchRequestProtocolOp().getFilter(),
-                                    ldapMessage.getSearchRequestProtocolOp().getAttributes().toArray(new String[0])
+                                ldapMessage.getSearchRequestProtocolOp().getBaseDN(),
+                                ldapMessage.getSearchRequestProtocolOp().getScope(),
+                                enhancedFilter,
+                                ldapMessage.getSearchRequestProtocolOp().getAttributes().toArray(new String[0])
                             );
+
                             serverMessageId = searchRequest.getLastMessageID();
                             messageIdMapping.put(serverMessageId, clientMessageId);
 
                             LdapProxyStreamingSearchResultListener listener = new LdapProxyStreamingSearchResultListener(
-                                    ctx, LdapSearchMITM.filter, (entry, msgID) -> {
-                                Integer originalMessageId = messageIdMapping.get(msgID);
-                                return LdapSearchMITM.entryProcessor.apply(
-                                        entry, originalMessageId != null ? originalMessageId : msgID
-                                );
-                            }, serverMessageId
+                                    ctx,
+                                    ldapSearchMITM.getFilter(),
+                                    ldapSearchMITM.getEntryProcessor(),
+                                    serverMessageId
                             );
 
                             SearchResult searchResult = conn.search(
@@ -135,6 +141,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                                     searchRequest.getFilter().toString(),
                                     searchRequest.getAttributes()
                             );
+
                             sendSearchDoneResponse(ctx, clientMessageId, searchResult.getResultCode());
                             break;
 

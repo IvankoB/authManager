@@ -47,12 +47,12 @@ public class LdapSearchMITM {
         //updatedAttributes.add(new Attribute("telephoneNumber", "+1234567890"));
 
         updatedAttributes.put(
-                "uwedMail",
-                new Attribute("uwedMail", updatedAttributes.get("sAMAccountName").getValue() + "@uwed.uz")
+                "registeredAddress",
+                new Attribute("registeredAddress", updatedAttributes.get("sAMAccountName").getValue() + "@uwed.uz")
         );
         updatedAttributes.put(
-                "acMail",
-                new Attribute("acMail", updatedAttributes.get("sAMAccountName").getValue() + "@uwed.ac.uz")
+                "postalAddress",
+                new Attribute("postalAddress", updatedAttributes.get("sAMAccountName").getValue() + "@uwed.ac.uz")
         );
 
         // Преобразуем Map обратно в List для создания Entry

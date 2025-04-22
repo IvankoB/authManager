@@ -97,10 +97,15 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                             targetInfo.getProto(), targetInfo.getHost(), targetInfo.getPort());
                     switch (messageType) {
                         case LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST:
-                            SimpleBindRequest bindRequest = new SimpleBindRequest(
-                                    ldapMessage.getBindRequestProtocolOp().getBindDN(),
-                                    ldapMessage.getBindRequestProtocolOp().getSimplePassword().stringValue()
-                            );
+
+                            BindRequestProtocolOp bindOp = ldapMessage.getBindRequestProtocolOp();
+                            String bindDN = bindOp.getBindDN();
+                            String password = bindOp.getSimplePassword() != null ? bindOp.getSimplePassword().toString() : null;
+
+                            // Обрабатываем bindExpression через LdapSearchMITM
+                            String effectiveBindDN = ldapSearchMITM.processBindExpression(bindDN, password, conn);
+                            SimpleBindRequest bindRequest = new SimpleBindRequest(effectiveBindDN, password);
+
                             serverMessageId = bindRequest.getLastMessageID();
                             messageIdMapping.put(serverMessageId, clientMessageId);
 
@@ -109,6 +114,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                             break;
 
                         case LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST:
+
                             // Выполняем bind с фиксированными учетными данными перед поиском
                             ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
                             conn.bind(targetConfig.getUserDn(), targetConfig.getPassword());
@@ -116,22 +122,22 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                             Filter originalFilter = ldapMessage.getSearchRequestProtocolOp().getFilter();
                             Filter enhancedFilter = ldapSearchMITM.generateLdapFilter(originalFilter);
 
-                            // Исправленный конструктор SearchRequest
                             SearchRequest searchRequest = new SearchRequest(
-                                ldapMessage.getSearchRequestProtocolOp().getBaseDN(),
-                                ldapMessage.getSearchRequestProtocolOp().getScope(),
-                                enhancedFilter,
-                                ldapMessage.getSearchRequestProtocolOp().getAttributes().toArray(new String[0])
+                                    ldapMessage.getSearchRequestProtocolOp().getBaseDN(),
+                                    ldapMessage.getSearchRequestProtocolOp().getScope(),
+                                    enhancedFilter,
+                                    ldapMessage.getSearchRequestProtocolOp().getAttributes().toArray(new String[0])
                             );
 
                             serverMessageId = searchRequest.getLastMessageID();
                             messageIdMapping.put(serverMessageId, clientMessageId);
 
+                            // Передаём clientMessageId вместо serverMessageId, чтобы использовать его напрямую
                             LdapProxyStreamingSearchResultListener listener = new LdapProxyStreamingSearchResultListener(
                                     ctx,
                                     ldapSearchMITM.getFilter(),
                                     ldapSearchMITM.getEntryProcessor(),
-                                    serverMessageId
+                                    clientMessageId // Используем clientMessageId вместо serverMessageId
                             );
 
                             SearchResult searchResult = conn.search(

@@ -2,10 +2,7 @@ package edu.uwed.authManager.ldap;
 
 import com.unboundid.ldap.protocol.LDAPMessage;
 import com.unboundid.ldap.protocol.SearchResultEntryProtocolOp;
-import com.unboundid.ldap.sdk.Attribute;
-import com.unboundid.ldap.sdk.Entry;
-import com.unboundid.ldap.sdk.Filter;
-import com.unboundid.ldap.sdk.SearchResultEntry;
+import com.unboundid.ldap.sdk.*;
 import edu.uwed.authManager.configuration.ConfigProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,10 +49,12 @@ public class LdapSearchMITM {
             if (matchingAttr != null && matchingAttr.getSearchExpression() != null) {
                 // Локальный атрибут, заменяем на серверный фильтр
                 String username = extractUsernameFromValue(filter.getAssertionValue());
-                String targetAttribute = extractAttributeName(matchingAttr.getSearchExpression());
                 if (username != null && !username.isEmpty()) {
-                    logger.debug("Replacing local attribute '{}' with server filter for '{}={}'", attributeName, targetAttribute, username);
-                    return Filter.createEqualityFilter(targetAttribute, username);
+                    String targetAttribute = extractAttributeName(matchingAttr.getSearchExpression());
+                    // Форматируем значение серверного фильтра с учётом searchExpression
+                    String targetValue = formatServerFilterValue(matchingAttr.getSearchExpression(), username);
+                    logger.debug("Replacing local attribute '{}' with server filter for '{}={}'", attributeName, targetAttribute, targetValue);
+                    return Filter.createEqualityFilter(targetAttribute, targetValue);
                 } else {
                     logger.debug("No valid username found in client filter for '{}', using presence filter for 'mail'", attributeName);
                     return Filter.createPresenceFilter("mail");
@@ -90,30 +89,110 @@ public class LdapSearchMITM {
         return null;
     }
 
-    // Фильтр для клиентской фильтрации (резервный)
-    public Predicate<SearchResultEntry> getFilter() {
-        return entry -> {
-            List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
-            for (ConfigProperties.LocalAttribute attr : attributes) {
-                String searchExpression = attr.getSearchExpression();
-                if (searchExpression != null && !searchExpression.isEmpty()) {
-                    String value = parseSearchExpression(entry, searchExpression, attr.getName());
-                    if (value == null || value.isEmpty()) {
-                        logger.debug("Search expression {} did not match for entry DN: {}", searchExpression, entry.getDN());
-                        return false;
-                    }
+    // Форматирование значения серверного фильтра на основе searchExpression
+    private String formatServerFilterValue(String searchExpression, String username) {
+        if (searchExpression.contains("[[email:username]]")) {
+            // Заменяем [[email:username]] на username
+            String result = searchExpression.replace("[[email:username]]", username);
+            // Удаляем часть {{userPrincipalName}}=, оставляя только значение
+            Pattern pattern = Pattern.compile("\\{\\{[^}]+\\}\\}=");
+            Matcher matcher = pattern.matcher(result);
+            if (matcher.find()) {
+                return matcher.replaceFirst("");
+            }
+            return result;
+        }
+        return username;
+    }
+
+    // Извлечение имени атрибута
+    private String extractAttributeName(String expression) {
+        Pattern pattern = Pattern.compile("\\{\\{([^}]+)\\}\\}");
+        Matcher matcher = pattern.matcher(expression);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return "";
+    }
+
+    // Извлечение username из DN (например, cn=ivan ivanovich -> ivan)
+    private String extractUsernameFromDn(String dn) {
+        if (dn != null) {
+            Pattern pattern = Pattern.compile("cn=([^,]+)", Pattern.CASE_INSENSITIVE);
+            Matcher matcher = pattern.matcher(dn);
+            if (matcher.find()) {
+                String cn = matcher.group(1);
+                // Предполагаем, что username — это первая часть CN (до пробела, если есть)
+                return cn.contains(" ") ? cn.split(" ")[0] : cn;
+            }
+        }
+        return null;
+    }
+
+    // Извлечение username с использованием поиска (если DN не содержит нужных данных)
+    private String extractUsernameFromDnOrSearch(String dn, LDAPConnection conn) throws LDAPException {
+        String username = extractUsernameFromDn(dn);
+        if (username != null && !username.isEmpty()) {
+            return username;
+        }
+
+        // Если не удалось извлечь username из DN, выполняем поиск
+        SearchRequest searchRequest = new SearchRequest(
+                dn, SearchScope.BASE, Filter.createEqualityFilter("objectClass", "person"), "sAMAccountName"
+        );
+        SearchResultEntry entry = conn.searchForEntry(searchRequest);
+        if (entry != null) {
+            return entry.getAttributeValue("sAMAccountName");
+        }
+        return null;
+    }
+
+    // Форматирование bindExpression (например, {{userPrincipalName}}=[[email:username]]@uwed.edu -> ivan@uwed.edu)
+    private String formatBindExpression(String bindExpression, String username) {
+        if (bindExpression.contains("[[email:username]]")) {
+            // Заменяем [[email:username]] на username
+            String result = bindExpression.replace("[[email:username]]", username);
+            // Удаляем часть {{userPrincipalName}}, оставляя только значение
+            Pattern pattern = Pattern.compile("\\{\\{[^}]+\\}\\}=");
+            Matcher matcher = pattern.matcher(result);
+            if (matcher.find()) {
+                return matcher.replaceFirst("");
+            }
+            return result;
+        }
+        return username;
+    }
+
+    // Обработка bindExpression для BindRequest
+    public String processBindExpression(String dn, String password, LDAPConnection conn) throws LDAPException {
+        List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
+
+        // Проверяем каждый локальный атрибут
+        for (ConfigProperties.LocalAttribute attr : attributes) {
+            String bindExpression = attr.getBindExpression();
+            // Если bindExpression задано и не пустое, обрабатываем его
+            if (bindExpression != null && !bindExpression.trim().isEmpty()) {
+                String username = extractUsernameFromDnOrSearch(dn, conn);
+                if (username != null) {
+                    String bindValue = formatBindExpression(bindExpression, username);
+                    logger.debug("Processed bind expression '{}' for DN '{}': {}", bindExpression, dn, bindValue);
+                    return bindValue; // Возвращаем bindValue, тестовый bind не нужен
                 }
             }
+        }
 
-            // Задел для будущей фильтрации по DN-атрибутам (DC, CN, OU)
-            // TODO: Добавить проверку DN-атрибутов, когда будут определены настройки
-            // Например:
-            // String dn = entry.getDN();
-            // if (!matchesDnPattern(dn, configProperties.getDnFilterPattern())) {
-            //     logger.debug("DN {} does not match configured pattern", dn);
-            //     return false;
-            // }
+        // Если bindExpression не задано или пустое, возвращаем исходный DN
+        logger.debug("No valid bind expression found, using original DN: {}", dn);
+        return dn;
+    }
 
+    // Фильтр для клиентской фильтрации (временно отключен, пропускает все записи)
+    public Predicate<SearchResultEntry> getFilter() {
+        return entry -> {
+            // Клиентская фильтрация пока не требуется, пропускаем все записи
+            // Задел для будущей локальной фильтрации по DN-атрибутам (например, OU)
+            // TODO: Добавить локальную фильтрацию, когда будут определены настройки
+            logger.debug("Client-side filtering is disabled, passing entry DN: {}", entry.getDN());
             return true;
         };
     }
@@ -174,17 +253,6 @@ public class LdapSearchMITM {
         }
         return null;
     }
-
-    // Извлечение имени атрибута
-    private String extractAttributeName(String expression) {
-        Pattern pattern = Pattern.compile("\\{\\{([^}]+)\\}\\}");
-        Matcher matcher = pattern.matcher(expression);
-        if (matcher.find()) {
-            return matcher.group(1);
-        }
-        return "";
-    }
-
 
 //    //////////// Создаем предикат для фильтрации
 //    public static Predicate<SearchResultEntry> filter = entry -> {

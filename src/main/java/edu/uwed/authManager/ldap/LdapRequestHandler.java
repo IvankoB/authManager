@@ -104,6 +104,12 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
                             // Обрабатываем bindExpression через LdapSearchMITM
                             String effectiveBindDN = ldapSearchMITM.processBindExpression(bindDN, password, conn);
+                            if (effectiveBindDN == null) {
+                                logger.warn("BIND rejected for bindDN '{}': domain not allowed", bindDN);
+                                sendBindResponse(ctx, clientMessageId, ResultCode.INVALID_CREDENTIALS); // Код 49
+                                break;
+                            }
+
                             SimpleBindRequest bindRequest = new SimpleBindRequest(effectiveBindDN, password);
 
                             serverMessageId = bindRequest.getLastMessageID();

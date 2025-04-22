@@ -163,26 +163,74 @@ public class LdapSearchMITM {
         return username;
     }
 
-    // Обработка bindExpression для BindRequest
-    public String processBindExpression(String dn, String password, LDAPConnection conn) throws LDAPException {
-        List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
+    // Проверка, является ли строка email и извлечение username
+    private String extractUsernameFromEmail(String email) {
+        if (email != null && email.contains("@")) {
+            String[] parts = email.split("@");
+            if (parts.length == 2 && !parts[0].isEmpty() && !parts[1].isEmpty()) {
+                return parts[0]; // username
+            }
+        }
+        return null;
+    }
 
-        // Проверяем каждый локальный атрибут
+    // Проверка, входит ли домен в список разрешённых доменов
+    private boolean isDomainAllowed(String email, String targetDomain, List<String> localDomains) {
+        if (email == null || !email.contains("@")) {
+            return false;
+        }
+        String domain = email.split("@")[1];
+        return domain.equalsIgnoreCase(targetDomain) || localDomains.stream()
+                .anyMatch(allowedDomain -> domain.equalsIgnoreCase(allowedDomain));
+    }
+
+    // Проверка, является ли строка DN (грубая проверка на наличие "dc=" или "cn=")
+    private boolean isDnFormat(String bindDn) {
+        return bindDn != null && (bindDn.toLowerCase().contains("dc=") || bindDn.toLowerCase().contains("cn="));
+    }
+
+    // Обработка bindDN для BindRequest
+    public String processBindExpression(String dn, String password, LDAPConnection conn) throws LDAPException {
+        ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
+
+        // Если bindDN в формате DN (например, cn=ivan ivanovich,ou=it,dc=uwed,dc=edu), оставляем без изменений
+        if (isDnFormat(dn)) {
+            logger.debug("bindDN '{}' is in DN format, using as is", dn);
+            return dn;
+        }
+
+        // Проверяем, включено ли map-local-domains и является ли dn email
+        if (targetConfig.isMapLocalDomains()) {
+            String username = extractUsernameFromEmail(dn);
+            if (username != null) {
+                if (isDomainAllowed(dn, targetConfig.getDomain(), targetConfig.getLocalDomains())) {
+                    String bindValue = username + "@" + targetConfig.getDomain();
+                    logger.debug("Mapped email '{}' to bind value '{}'", dn, bindValue);
+                    return bindValue;
+                } else {
+                    logger.warn("Email '{}' has a domain not in allowed list (target: {}, local: {}), rejecting BIND",
+                            dn, targetConfig.getDomain(), targetConfig.getLocalDomains());
+                    return null; // Домен не разрешён, возвращаем null
+                }
+            }
+        }
+
+        // Используем старую логику с bindExpression, если map-local-domains не применимо
+        List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
         for (ConfigProperties.LocalAttribute attr : attributes) {
             String bindExpression = attr.getBindExpression();
-            // Если bindExpression задано и не пустое, обрабатываем его
             if (bindExpression != null && !bindExpression.trim().isEmpty()) {
                 String username = extractUsernameFromDnOrSearch(dn, conn);
                 if (username != null) {
                     String bindValue = formatBindExpression(bindExpression, username);
                     logger.debug("Processed bind expression '{}' for DN '{}': {}", bindExpression, dn, bindValue);
-                    return bindValue; // Возвращаем bindValue, тестовый bind не нужен
+                    return bindValue;
                 }
             }
         }
 
-        // Если bindExpression не задано или пустое, возвращаем исходный DN
-        logger.debug("No valid bind expression found, using original DN: {}", dn);
+        // Если ни одна логика не применима, возвращаем исходный dn
+        logger.debug("No mapping or bind expression applied, using original bindDN: {}", dn);
         return dn;
     }
 
@@ -200,13 +248,8 @@ public class LdapSearchMITM {
     // Обработчик для модификации результатов поиска
     public BiFunction<SearchResultEntry, Integer, LDAPMessage> getEntryProcessor() {
         return (entry, msgID) -> {
-            Map<String, Attribute> updatedAttributes = entry.getAttributes().stream()
-                    .collect(Collectors.toMap(
-                            Attribute::getName,
-                            attr -> attr,
-                            (attr1, attr2) -> attr1,
-                            HashMap::new
-                    ));
+            Map<String, Attribute> updatedAttributes = entry.getAttributes().stream().collect(Collectors.toMap(
+                    Attribute::getName, attr -> attr,(attr1, attr2) -> attr1,HashMap::new));
 
             List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
             for (ConfigProperties.LocalAttribute attr : attributes) {
@@ -253,7 +296,6 @@ public class LdapSearchMITM {
         }
         return null;
     }
-
 //    //////////// Создаем предикат для фильтрации
 //    public static Predicate<SearchResultEntry> filter = entry -> {
 //        String mail = entry.getAttributeValue("mail");

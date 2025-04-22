@@ -78,6 +78,9 @@ public class ConfigProperties {
             private String sslProtocols;
             private String sslCiphers;
             private List<LocalAttribute> localAttributes = new ArrayList<>();
+            private String domain; // local.ldap.target.domain
+            private List<String> localDomains = new ArrayList<>(); // local.ldap.target.local-domains
+            private boolean mapLocalDomains; // local.ldap.target.map-local-domains
 
             public String getUrl() {
                 String protocol = "ldap";

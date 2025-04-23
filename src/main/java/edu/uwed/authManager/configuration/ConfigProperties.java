@@ -162,7 +162,8 @@ public class ConfigProperties {
         private String name;
         private String searchExpression;
         private String resultExpression;
-        private String bindExpression;
+//        private String bindExpression;
+        private boolean localDomainsOnly; // Обновлённое название флага
     }
 
 }

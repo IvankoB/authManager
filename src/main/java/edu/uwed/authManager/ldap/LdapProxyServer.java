@@ -64,7 +64,7 @@ public class LdapProxyServer {
         ldapBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,false, maxMessageSize
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,false
                 ))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);
@@ -74,13 +74,13 @@ public class LdapProxyServer {
         ldapsBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true, maxMessageSize
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true
                 ))
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true, maxMessageSize
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true
                 ))
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true, maxMessageSize
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true
                 ))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);

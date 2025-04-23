@@ -9,10 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
@@ -21,7 +18,6 @@ import java.util.stream.Collectors;
 
 @Component
 public class LdapSearchMITM {
-
     private static final Logger logger = LoggerFactory.getLogger(LdapSearchMITM.class);
     private final ConfigProperties configProperties;
 
@@ -33,6 +29,13 @@ public class LdapSearchMITM {
     // Генерация серверного LDAP-фильтра с заменой локальных атрибутов
     public Filter generateLdapFilter(Filter originalFilter) {
         List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
+
+        // Проверка домена на этапе фильтрации
+        Filter modifiedFilter = checkDomainInFilter(originalFilter, attributes);
+        if (modifiedFilter != null) {
+            return modifiedFilter; // Если домен недопустим, возвращаем фильтр, который не даст результатов
+        }
+
         return replaceLocalAttributes(originalFilter, attributes);
     }
 
@@ -78,7 +81,42 @@ public class LdapSearchMITM {
         return filter;
     }
 
-    // Извлечение username из значения фильтра (например, ivano@uwed.ac.uz -> ivano)
+    // Метод для проверки домена в фильтре с учётом атрибутов
+    private Filter checkDomainInFilter(Filter filter, List<ConfigProperties.LocalAttribute> attributes) {
+        ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
+        String targetDomain = targetConfig.getDomain();
+        List<String> localDomains = targetConfig.getLocalDomains();
+
+        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+            String attributeName = filter.getAttributeName();
+            // Проверяем, есть ли атрибут в конфигурации и включён ли флаг local-domains-only
+            Optional<ConfigProperties.LocalAttribute> matchingAttr = attributes.stream()
+                    .filter(attr -> attr.getName().equalsIgnoreCase(attributeName) && attr.isLocalDomainsOnly())
+                    .findFirst();
+
+            if (matchingAttr.isPresent()) {
+                String email = filter.getAssertionValue();
+                if (!isDomainAllowed(email, targetDomain, localDomains)) {
+                    logger.warn("Search rejected: email '{}' for attribute '{}' has a domain not in allowed list (target: {}, local: {})",
+                            email, attributeName, targetDomain, localDomains);
+                    // Возвращаем фильтр, который не даст результатов
+                    return Filter.createEqualityFilter("objectClass", "invalid");
+                }
+            }
+        } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND ||
+                filter.getFilterType() == Filter.FILTER_TYPE_OR) {
+            // Рекурсивно проверяем дочерние фильтры
+            for (Filter subFilter : filter.getComponents()) {
+                Filter result = checkDomainInFilter(subFilter, attributes);
+                if (result != null) {
+                    return result; // Если хотя бы один фильтр отклонён, прерываем поиск
+                }
+            }
+        }
+        return null; // Домен допустим или фильтр не подпадает под проверку
+    }
+
+    // Извлечение username из значения фильтра (например, ivan@uwed.ac.uz -> ivan)
     private String extractUsernameFromValue(String value) {
         if (value != null && value.contains("@")) {
             String username = value.split("@")[0];
@@ -113,54 +151,6 @@ public class LdapSearchMITM {
             return matcher.group(1);
         }
         return "";
-    }
-
-    // Извлечение username из DN (например, cn=ivan ivanovich -> ivan)
-    private String extractUsernameFromDn(String dn) {
-        if (dn != null) {
-            Pattern pattern = Pattern.compile("cn=([^,]+)", Pattern.CASE_INSENSITIVE);
-            Matcher matcher = pattern.matcher(dn);
-            if (matcher.find()) {
-                String cn = matcher.group(1);
-                // Предполагаем, что username — это первая часть CN (до пробела, если есть)
-                return cn.contains(" ") ? cn.split(" ")[0] : cn;
-            }
-        }
-        return null;
-    }
-
-    // Извлечение username с использованием поиска (если DN не содержит нужных данных)
-    private String extractUsernameFromDnOrSearch(String dn, LDAPConnection conn) throws LDAPException {
-        String username = extractUsernameFromDn(dn);
-        if (username != null && !username.isEmpty()) {
-            return username;
-        }
-
-        // Если не удалось извлечь username из DN, выполняем поиск
-        SearchRequest searchRequest = new SearchRequest(
-                dn, SearchScope.BASE, Filter.createEqualityFilter("objectClass", "person"), "sAMAccountName"
-        );
-        SearchResultEntry entry = conn.searchForEntry(searchRequest);
-        if (entry != null) {
-            return entry.getAttributeValue("sAMAccountName");
-        }
-        return null;
-    }
-
-    // Форматирование bindExpression (например, {{userPrincipalName}}=[[email:username]]@uwed.edu -> ivan@uwed.edu)
-    private String formatBindExpression(String bindExpression, String username) {
-        if (bindExpression.contains("[[email:username]]")) {
-            // Заменяем [[email:username]] на username
-            String result = bindExpression.replace("[[email:username]]", username);
-            // Удаляем часть {{userPrincipalName}}, оставляя только значение
-            Pattern pattern = Pattern.compile("\\{\\{[^}]+\\}\\}=");
-            Matcher matcher = pattern.matcher(result);
-            if (matcher.find()) {
-                return matcher.replaceFirst("");
-            }
-            return result;
-        }
-        return username;
     }
 
     // Проверка, является ли строка email и извлечение username
@@ -215,31 +205,14 @@ public class LdapSearchMITM {
             }
         }
 
-        // Используем старую логику с bindExpression, если map-local-domains не применимо
-        List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
-        for (ConfigProperties.LocalAttribute attr : attributes) {
-            String bindExpression = attr.getBindExpression();
-            if (bindExpression != null && !bindExpression.trim().isEmpty()) {
-                String username = extractUsernameFromDnOrSearch(dn, conn);
-                if (username != null) {
-                    String bindValue = formatBindExpression(bindExpression, username);
-                    logger.debug("Processed bind expression '{}' for DN '{}': {}", bindExpression, dn, bindValue);
-                    return bindValue;
-                }
-            }
-        }
-
-        // Если ни одна логика не применима, возвращаем исходный dn
-        logger.debug("No mapping or bind expression applied, using original bindDN: {}", dn);
+        // Если dn не в формате email и map-local-domains не применимо, возвращаем исходный dn
+        logger.debug("No mapping applied, using original bindDN: {}", dn);
         return dn;
     }
 
     // Фильтр для клиентской фильтрации (временно отключен, пропускает все записи)
     public Predicate<SearchResultEntry> getFilter() {
         return entry -> {
-            // Клиентская фильтрация пока не требуется, пропускаем все записи
-            // Задел для будущей локальной фильтрации по DN-атрибутам (например, OU)
-            // TODO: Добавить локальную фильтрацию, когда будут определены настройки
             logger.debug("Client-side filtering is disabled, passing entry DN: {}", entry.getDN());
             return true;
         };
@@ -249,7 +222,7 @@ public class LdapSearchMITM {
     public BiFunction<SearchResultEntry, Integer, LDAPMessage> getEntryProcessor() {
         return (entry, msgID) -> {
             Map<String, Attribute> updatedAttributes = entry.getAttributes().stream().collect(Collectors.toMap(
-                    Attribute::getName, attr -> attr,(attr1, attr2) -> attr1,HashMap::new));
+                    Attribute::getName, attr -> attr, (attr1, attr2) -> attr1, HashMap::new));
 
             List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
             for (ConfigProperties.LocalAttribute attr : attributes) {
@@ -271,22 +244,6 @@ public class LdapSearchMITM {
         };
     }
 
-    // Парсинг search-expression с учетом атрибута name
-    private String parseSearchExpression(SearchResultEntry entry, String expression, String attributeName) {
-        if (expression.contains("[[email:username]]")) {
-            String email = entry.getAttributeValue(attributeName);
-            if (email != null && email.contains("@")) {
-                String username = email.split("@")[0];
-                String expectedUsername = entry.getAttributeValue(extractAttributeName(expression));
-                // Проверяем, что username из email соответствует sAMAccountName
-                return username.equals(expectedUsername) ? username : null;
-            }
-            return null;
-        }
-        String targetAttribute = extractAttributeName(expression);
-        return entry.getAttributeValue(targetAttribute);
-    }
-
     // Парсинг result-expression
     private String parseResultExpression(SearchResultEntry entry, String expression) {
         String attributeName = extractAttributeName(expression);
@@ -296,6 +253,7 @@ public class LdapSearchMITM {
         }
         return null;
     }
+
 //    //////////// Создаем предикат для фильтрации
 //    public static Predicate<SearchResultEntry> filter = entry -> {
 //        String mail = entry.getAttributeValue("mail");

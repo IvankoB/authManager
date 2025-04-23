@@ -51,9 +51,9 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
         // Добавляем логирование сырых данных
         pipeline.addFirst("rawLogger", new LoggingHandler(LogLevel.DEBUG));
         // Добавляем тайм-аут на завершения чтения от клиента (5 секунд)
-        pipeline.addLast(new ReadTimeoutHandler(5));
+////////        pipeline.addLast(new ReadTimeoutHandler(5));
         // Добавляем тайм-аут на запись к клиенту (5 секунд)
-        pipeline.addLast(new WriteTimeoutHandler(5));
+///////        pipeline.addLast(new WriteTimeoutHandler(5));
         // Добавляем декодер для сборки полных LDAP-сообщений
         //pipeline.addLast(new LdapFrameDecoder());
         // Добавляем обработчик запросов

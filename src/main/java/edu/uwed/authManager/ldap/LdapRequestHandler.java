@@ -80,6 +80,14 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         }
 
         TargetServerInfo targetInfo = negotiateTargetServer(ctx, msg);
+//        if (targetInfo.getMessageType() == LDAPMessage.PROTOCOL_OP_TYPE_UNBIND_REQUEST) {
+//            // Задержка перед закрытием соединения
+//            ctx.executor().schedule(() -> {
+//                logger.info("Closing connection after unbind delay");
+//                ctx.close();
+//            }, 500, TimeUnit.MILLISECONDS); // Задержка 500 мс
+//        }
+
         LdapConstants.PROXY_ENDPOINT endpoint = targetInfo.getEndpoint();
         int messageType = targetInfo.getMessageType();
         LDAPMessage ldapMessage = targetInfo.getLdapMessage();

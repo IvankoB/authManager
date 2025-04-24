@@ -48,15 +48,14 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
         if (useSsl) { // если канал настроен на LDAPS-коеннекты, то начинать соединения с утряски SSL
             pipeline.addLast(proxySslContext.newHandler(ch.alloc()));
         }
+        int timeout = configProperties.getTargetConfig().getClientTimeoutSec();
         // Добавляем логирование сырых данных
         pipeline.addFirst("rawLogger", new LoggingHandler(LogLevel.DEBUG));
         // Добавляем тайм-аут на завершения чтения от клиента (5 секунд)
-////////        pipeline.addLast(new ReadTimeoutHandler(5));
+        pipeline.addLast(new ReadTimeoutHandler(timeout));
         // Добавляем тайм-аут на запись к клиенту (5 секунд)
-///////        pipeline.addLast(new WriteTimeoutHandler(5));
-        // Добавляем декодер для сборки полных LDAP-сообщений
-        //pipeline.addLast(new LdapFrameDecoder());
-        // Добавляем обработчик запросов
+        pipeline.addLast(new WriteTimeoutHandler(timeout));
+                // Добавляем обработчик запросов
         pipeline.addLast(new LdapRequestHandler(
             configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory, targetConnectionPoolFactory,ldapSearchMITM
         ));

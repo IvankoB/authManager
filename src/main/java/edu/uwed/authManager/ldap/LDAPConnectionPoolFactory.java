@@ -97,6 +97,14 @@ public class LDAPConnectionPoolFactory {
         }
     }
 
+    public synchronized void invalidateConnection(LDAPConnection connection) {
+        if (connectionPool != null && connection != null) {
+            logger.info("Invalidating LDAP connection: {}", connection);
+            connectionPool.releaseDefunctConnection(connection);
+            // Пул автоматически создаст новое соединение, если createIfNecessary=true
+        }
+    }
+
     @PreDestroy
     public void close() {
         if (connectionPool != null) {

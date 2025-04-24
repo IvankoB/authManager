@@ -11,6 +11,7 @@ import io.netty.channel.*;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.timeout.ReadTimeoutException;
+import io.netty.util.AttributeKey;
 import org.apache.logging.log4j.util.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +21,9 @@ import java.io.ByteArrayInputStream;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import com.unboundid.ldap.sdk.SimpleBindRequest;
 
 public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
@@ -60,19 +64,16 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
-        // Логируем содержимое буфера для отладки
         logger.debug("Received ByteBuf: readableBytes={}", msg.readableBytes());
         byte[] debugBytes = new byte[msg.readableBytes()];
         msg.getBytes(msg.readerIndex(), debugBytes);
         logger.debug("Buffer contents: {}", Arrays.toString(debugBytes));
 
-        // Проверяем, что буфер не пустой
         if (msg.readableBytes() < 2) {
             logger.error("Received empty or too small buffer: {} bytes", msg.readableBytes());
             ctx.close();
             return;
         }
-        // Проверяем максимальный размер сообщения
         if (!checkMessageSize(msg)) {
             logger.error("Message size check failed, closing connection");
             ctx.close();
@@ -80,13 +81,6 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         }
 
         TargetServerInfo targetInfo = negotiateTargetServer(ctx, msg);
-//        if (targetInfo.getMessageType() == LDAPMessage.PROTOCOL_OP_TYPE_UNBIND_REQUEST) {
-//            // Задержка перед закрытием соединения
-//            ctx.executor().schedule(() -> {
-//                logger.info("Closing connection after unbind delay");
-//                ctx.close();
-//            }, 500, TimeUnit.MILLISECONDS); // Задержка 500 мс
-//        }
 
         LdapConstants.PROXY_ENDPOINT endpoint = targetInfo.getEndpoint();
         int messageType = targetInfo.getMessageType();
@@ -102,8 +96,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                                     ? ResultCode.SUCCESS
                                     : ResultCode.INVALID_CREDENTIALS
                     );
-                } else
-                if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_UNBIND_REQUEST) {
+                } else if (messageType == LDAPMessage.PROTOCOL_OP_TYPE_UNBIND_REQUEST) {
                     processUnbindRequest(ctx, clientMessageId, null, endpoint);
                 }
                 return;
@@ -118,53 +111,88 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                             targetInfo.getProto(), targetInfo.getHost(), targetInfo.getPort());
                     switch (messageType) {
                         case LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST:
-
                             BindRequestProtocolOp bindOp = ldapMessage.getBindRequestProtocolOp();
                             String bindDN = bindOp.getBindDN();
                             String password = bindOp.getSimplePassword() != null ? bindOp.getSimplePassword().toString() : null;
 
-                            // Обрабатываем bindExpression через LdapSearchMITM
                             String effectiveBindDN = ldapSearchMITM.processBindExpression(bindDN, password, conn);
                             if (effectiveBindDN == null) {
                                 logger.warn("BIND rejected for bindDN '{}': domain not allowed", bindDN);
-                                sendBindResponse(ctx, clientMessageId, ResultCode.INVALID_CREDENTIALS); // Код 49
+                                sendBindResponse(ctx, clientMessageId, ResultCode.INVALID_CREDENTIALS);
                                 break;
                             }
 
                             SimpleBindRequest bindRequest = new SimpleBindRequest(effectiveBindDN, password);
-
                             serverMessageId = bindRequest.getLastMessageID();
                             messageIdMapping.put(serverMessageId, clientMessageId);
 
                             BindResult bindResult = conn.bind(bindRequest);
                             sendBindResponse(ctx, clientMessageId, bindResult.getResultCode());
+// код для проверки задерки соединений
+//                            long startTime = System.currentTimeMillis();
+//                            try {
+//                                BindResult bindResult = conn.bind(bindRequest);
+//                                long duration = System.currentTimeMillis() - startTime;
+//                                logger.info("BIND operation for bindDN '{}' completed in {} ms with result: {}",
+//                                        effectiveBindDN, duration, bindResult.getResultCode());
+//                                sendBindResponse(ctx, clientMessageId, bindResult.getResultCode());
+//                            } catch (LDAPException e) {
+//                                long duration = System.currentTimeMillis() - startTime;
+//                                logger.error("BIND operation for bindDN '{}' failed after {} ms: {}",
+//                                        effectiveBindDN, duration, e.getMessage(), e);
+//                                // Инвалидируем соединение после неудачного bind
+//                                targetConnectionPoolFactory.invalidateConnection(conn);
+//                                sendBindResponse(ctx, clientMessageId, e.getResultCode());
+//                            }
                             break;
 
                         case LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST:
-
-                            // Выполняем bind с фиксированными учетными данными перед поиском
                             ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
                             conn.bind(targetConfig.getUserDn(), targetConfig.getPassword());
 
-                            Filter originalFilter = ldapMessage.getSearchRequestProtocolOp().getFilter();
-                            Filter enhancedFilter = ldapSearchMITM.generateLdapFilter(originalFilter);
+                            SearchRequestProtocolOp searchRequestOp = ldapMessage.getSearchRequestProtocolOp();
+                            Filter originalFilter = searchRequestOp.getFilter();
+                            List<String> requestedAttributes = searchRequestOp.getAttributes();
+
+                            // Сохраняем запрошенные атрибуты
+                            ctx.channel().attr(AttributeKey.valueOf("requestedAttributes")).set(new HashSet<>(requestedAttributes));
+
+                            // Добавляем зависимые атрибуты в запрос
+                            List<String> attributesToRequest = new ArrayList<>(requestedAttributes);
+                            Set<String> dependentAttributes = new HashSet<>();
+                            for (ConfigProperties.LocalAttribute attr : configProperties.getTargetConfig().getLocalAttributes()) {
+                                String resultExpression = attr.getResultExpression();
+                                if (resultExpression != null) {
+                                    Pattern pattern = Pattern.compile("\\{\\{([^{}]+)\\}\\}");
+                                    Matcher matcher = pattern.matcher(resultExpression);
+                                    while (matcher.find()) {
+                                        String depAttr = matcher.group(1).trim();
+                                        dependentAttributes.add(depAttr);
+                                        if (!attributesToRequest.contains(depAttr)) {
+                                            attributesToRequest.add(depAttr);
+                                            logger.debug("Added dependent attribute to request: {}", depAttr);
+                                        }
+                                    }
+                                }
+                            }
+
+                            Filter enhancedFilter = ldapSearchMITM.generateLdapFilter(originalFilter, ctx);
 
                             SearchRequest searchRequest = new SearchRequest(
-                                    ldapMessage.getSearchRequestProtocolOp().getBaseDN(),
-                                    ldapMessage.getSearchRequestProtocolOp().getScope(),
+                                    searchRequestOp.getBaseDN(),
+                                    searchRequestOp.getScope(),
                                     enhancedFilter,
-                                    ldapMessage.getSearchRequestProtocolOp().getAttributes().toArray(new String[0])
+                                    attributesToRequest.toArray(new String[0])
                             );
 
                             serverMessageId = searchRequest.getLastMessageID();
                             messageIdMapping.put(serverMessageId, clientMessageId);
 
-                            // Передаём clientMessageId вместо serverMessageId, чтобы использовать его напрямую
                             LdapProxyStreamingSearchResultListener listener = new LdapProxyStreamingSearchResultListener(
                                     ctx,
                                     ldapSearchMITM.getFilter(),
-                                    ldapSearchMITM.getEntryProcessor(),
-                                    clientMessageId // Используем clientMessageId вместо serverMessageId
+                                    ldapSearchMITM.getEntryProcessor(ctx, requestedAttributes),
+                                    clientMessageId
                             );
 
                             SearchResult searchResult = conn.search(
@@ -201,6 +229,13 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
                     switch (messageType) {
                         case LDAPMessage.PROTOCOL_OP_TYPE_BIND_REQUEST:
+                            // Инвалидируем соединение
+                            if (targetConnectionPoolFactory != null) {
+                                logger.info("Calling invalidateConnection for connection: {}", conn);
+                                targetConnectionPoolFactory.invalidateConnection(conn);
+                            } else {
+                                logger.error("targetConnectionPoolFactory is null, cannot invalidate connection");
+                            }
                             sendBindResponse(ctx, clientMessageId, resultCode);
                             break;
                         case LDAPMessage.PROTOCOL_OP_TYPE_SEARCH_REQUEST:
@@ -234,13 +269,20 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         logger.info("Processing UNBIND request for clientMessageId: {}, endpoint: {}", messageId, endpoint);
         if (endpoint == LdapConstants.PROXY_ENDPOINT.TARGET && conn != null) {
             try {
-                conn.close(); // Закрываем соединение с целевым сервером, отправляя UNBIND_REQUEST
+                conn.close();
                 logger.debug("Closed connection to target server for clientMessageId: {}", messageId);
             } catch (Exception e) {
                 logger.error("Failed to close connection to target server for clientMessageId: {}", messageId, e);
             }
         }
-        ctx.close(); // Закрываем клиентское соединение
+        // Задержка перед закрытием соединения
+        long delay = configProperties.getTargetConfig().getDisconnectDelayMs();
+        if (delay > 0) {
+            ctx.executor().schedule(() -> {
+                logger.info("Closing connection after unbind delay for clientMessageId: {}", messageId);
+                ctx.close();
+            }, delay, TimeUnit.MILLISECONDS); // Задержка 500 мс
+        }
     }
 
     private void sendSearchDoneResponse(ChannelHandlerContext ctx, int messageID, ResultCode resultCode) {

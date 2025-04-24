@@ -67,20 +67,22 @@ public class ConfigProperties {
     @Data
     public static class TargetConfig {
             private String host; // Заменено с name
-            private int ldapPort;
-            private int ldapsPort;
-            private String security; // none, startTLS, ldaps
+            private int ldapPort = 389;
+            private int ldapsPort = 636;
+            private String security = "none"; // none | (tls | startTLS) | (ldaps / ssl)
             private String userDn;
             private String password;
-            private boolean ignoreSslVerification;
-            private String referralHandling;
+            private boolean ignoreSslVerification = false;
+            private String referralHandling = "follow"; // follow | ignore | throw
             private String sslBundle;
             private String sslProtocols;
             private String sslCiphers;
             private List<LocalAttribute> localAttributes = new ArrayList<>();
             private String domain; // local.ldap.target.domain
             private List<String> localDomains = new ArrayList<>(); // local.ldap.target.local-domains
-            private boolean mapLocalDomains; // local.ldap.target.map-local-domains
+            private boolean mapLocalDomains = true; // redirect <username>@local-domains[*] BINDs to <username>@domain
+            private int clientTimeoutSec = 5; //
+            private long disconnectDelayMs = 0; // after cleint's UNBIND request
 
             public String getUrl() {
                 String protocol = "ldap";
@@ -164,6 +166,7 @@ public class ConfigProperties {
         private String resultExpression;
 //        private String bindExpression;
         private boolean localDomainsOnly; // Обновлённое название флага
+        private boolean dependentAttributes;
     }
 
 }

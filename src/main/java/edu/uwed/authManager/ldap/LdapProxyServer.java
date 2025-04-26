@@ -40,7 +40,8 @@ public class LdapProxyServer {
             @Qualifier("proxyLdapSslContext") SslContext proxySslContext,
             @Qualifier("proxyLdapTlsContext") SSLContext proxyTlsContext,
             @Qualifier("targetLdapSecureSocketFactory") SSLSocketFactory targetSecureSocketFactory,
-            @Qualifier("targetLdapConnectionPoolFactory") LDAPConnectionPoolFactory targetConnectionPoolFactory, LdapSearchMITM ldapSearchMITM
+            @Qualifier("targetLdapConnectionPoolFactory") LDAPConnectionPoolFactory targetConnectionPoolFactory,
+            LdapSearchMITM ldapSearchMITM
     ) {
         this.configProperties = configProperties;
         this.proxySslContext = proxySslContext;
@@ -53,11 +54,10 @@ public class LdapProxyServer {
     @PostConstruct
     public void start() throws Exception {
         bossGroup = new NioEventLoopGroup(1);
-        workerGroup = new NioEventLoopGroup();
+        workerGroup = new NioEventLoopGroup(16); // Увеличили до 16 потоков для параллельной обработки
         ConfigProperties.ProxyConfig proxyConfig = configProperties.getProxyConfig();
         int ldapPort = proxyConfig.getPort().getLdap();
         int ldapsPort = proxyConfig.getPort().getLdaps();
-        long maxMessageSize = proxyConfig.getMaxMessageSize();
 
         // for LDAP[+TLS] connections
         ServerBootstrap ldapBootstrap = new ServerBootstrap();
@@ -73,12 +73,6 @@ public class LdapProxyServer {
         ServerBootstrap ldapsBootstrap = new ServerBootstrap();
         ldapsBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
-                .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true
-                ))
-                .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true
-                ))
                 .childHandler(new LdapServerInitializer(
                     configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true
                 ))

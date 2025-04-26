@@ -8,11 +8,9 @@ import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.handler.timeout.WriteTimeoutHandler;
-import org.springframework.ldap.core.LdapTemplate;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
-import java.util.Map;
 
 public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
 
@@ -52,9 +50,9 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
         // Добавляем логирование сырых данных
         pipeline.addFirst("rawLogger", new LoggingHandler(LogLevel.DEBUG));
         // Добавляем тайм-аут на завершения чтения от клиента (5 секунд)
-        pipeline.addLast(new ReadTimeoutHandler(timeout));
+//////////        pipeline.addLast(new ReadTimeoutHandler(timeout));
         // Добавляем тайм-аут на запись к клиенту (5 секунд)
-        pipeline.addLast(new WriteTimeoutHandler(timeout));
+/////////        pipeline.addLast(new WriteTimeoutHandler(timeout));
                 // Добавляем обработчик запросов
         pipeline.addLast(new LdapRequestHandler(
             configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory, targetConnectionPoolFactory,ldapSearchMITM

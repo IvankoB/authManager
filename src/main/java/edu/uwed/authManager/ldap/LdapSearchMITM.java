@@ -4,8 +4,7 @@ import com.unboundid.ldap.protocol.LDAPMessage;
 import com.unboundid.ldap.protocol.SearchResultEntryProtocolOp;
 import com.unboundid.ldap.sdk.*;
 import edu.uwed.authManager.configuration.ConfigProperties;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.util.AttributeKey;
+import lombok.Data;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,47 +22,108 @@ public class LdapSearchMITM {
     private static final Logger logger = LoggerFactory.getLogger(LdapSearchMITM.class);
     private final ConfigProperties configProperties;
 
+    @Data
+    public static class FilterResult {
+        private final Filter filter;
+        private final String filterValue;
+    }
+
     @Autowired
     public LdapSearchMITM(ConfigProperties configProperties) {
         this.configProperties = configProperties;
     }
 
-    // Генерация серверного LDAP-фильтра с заменой локальных атрибутов
-    public Filter generateLdapFilter(Filter originalFilter, ChannelHandlerContext ctx) {
+    public FilterResult generateLdapFilterOLD(Filter originalFilter) {
         List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
 
-        // Проверка домена на этапе фильтрации
         Filter modifiedFilter = checkDomainInFilter(originalFilter, attributes);
         if (modifiedFilter != null) {
-            return modifiedFilter; // Если домен недопустим, возвращаем фильтр, который не даст результатов
+            return new FilterResult(modifiedFilter, null);
         }
 
-        // Сохраняем значение фильтра для использования в обработке результатов
         String filterValue = extractValueFromFilter(originalFilter);
-        if (filterValue != null && ctx != null) {
-            ctx.channel().attr(AttributeKey.valueOf("filterValue")).set(filterValue);
+        if (filterValue != null) {
             logger.debug("Extracted filter value: {}", filterValue);
         }
 
-        return replaceLocalAttributes(originalFilter, attributes);
+        Filter finalFilter = replaceLocalAttributes(originalFilter, attributes);
+        return new FilterResult(finalFilter, filterValue);
     }
 
-    // Рекурсивная замена локальных атрибутов на серверные, сохраняя структуру фильтра
-    private Filter replaceLocalAttributes(Filter filter, List<ConfigProperties.LocalAttribute> attributes) {
-        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+    public FilterResult generateLdapFilter(Filter originalFilter) {
+        List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
+
+        // Проверяем домен в фильтре
+        Filter modifiedFilter = checkDomainInFilter(originalFilter, attributes);
+        if (modifiedFilter != null) {
+            return new FilterResult(modifiedFilter, null);
+        }
+
+        String filterValue = extractValueFromFilter(originalFilter);
+        if (filterValue != null) {
+            logger.debug("Extracted filter value: {}", filterValue);
+        }
+
+        // Рекурсивно обрабатываем фильтр
+        Filter finalFilter = transformPresenceFilters(originalFilter, attributes);
+        return new FilterResult(finalFilter, filterValue);
+    }
+
+    // Новый метод для рекурсивной обработки фильтров
+    private Filter transformPresenceFilters(Filter filter, List<ConfigProperties.LocalAttribute> attributes) {
+        // Если фильтр — это PRESENCE
+        if (filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
             String attributeName = filter.getAttributeName();
-            // Проверяем, является ли атрибут локальным
             ConfigProperties.LocalAttribute matchingAttr = attributes.stream()
                     .filter(attr -> attr.getName().equalsIgnoreCase(attributeName))
                     .findFirst()
                     .orElse(null);
 
             if (matchingAttr != null && matchingAttr.getSearchExpression() != null) {
-                // Локальный атрибут, заменяем на серверный фильтр
+                String targetAttribute = extractAttributeName(matchingAttr.getSearchExpression());
+                // Преобразуем (postalAddress=*) в (sAMAccountName=*)
+                String transformedFilter = "(" + targetAttribute + "=*)";
+                try {
+                    Filter finalFilter = Filter.create(transformedFilter);
+                    logger.debug("Transformed wildcard filter: {} -> {}", filter, finalFilter);
+                    return finalFilter;
+                } catch (LDAPException e) {
+                    logger.error("Failed to parse transformed wildcard filter: {}", transformedFilter, e);
+                    return Filter.createEqualityFilter("objectClass", "invalid");
+                }
+            }
+            return filter;
+        }
+        // Если фильтр составной (AND или OR), рекурсивно обрабатываем подфильтры
+        else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
+            List<Filter> modifiedComponents = new ArrayList<>();
+            for (Filter subFilter : filter.getComponents()) {
+                Filter transformedSubFilter = transformPresenceFilters(subFilter, attributes);
+                modifiedComponents.add(transformedSubFilter);
+            }
+            if (filter.getFilterType() == Filter.FILTER_TYPE_AND) {
+                return Filter.createANDFilter(modifiedComponents);
+            } else {
+                return Filter.createORFilter(modifiedComponents);
+            }
+        }
+        // Для остальных типов фильтров вызываем существующую логику
+        return replaceLocalAttributes(filter, attributes);
+    }
+
+
+    private Filter replaceLocalAttributes(Filter filter, List<ConfigProperties.LocalAttribute> attributes) {
+        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+            String attributeName = filter.getAttributeName();
+            ConfigProperties.LocalAttribute matchingAttr = attributes.stream()
+                    .filter(attr -> attr.getName().equalsIgnoreCase(attributeName))
+                    .findFirst()
+                    .orElse(null);
+
+            if (matchingAttr != null && matchingAttr.getSearchExpression() != null) {
                 String username = extractUsernameFromValue(filter.getAssertionValue());
                 if (username != null && !username.isEmpty()) {
                     String targetAttribute = extractAttributeName(matchingAttr.getSearchExpression());
-                    // Форматируем значение серверного фильтра с учётом searchExpression
                     String targetValue = formatServerFilterValue(matchingAttr.getSearchExpression(), username);
                     logger.debug("Replacing local attribute '{}' with server filter for '{}={}'", attributeName, targetAttribute, targetValue);
                     return Filter.createEqualityFilter(targetAttribute, targetValue);
@@ -72,25 +132,20 @@ public class LdapSearchMITM {
                     return Filter.createPresenceFilter("mail");
                 }
             }
-            // Не локальный атрибут, возвращаем без изменений
             return filter;
         } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
-            // Рекурсивно обрабатываем дочерние фильтры
             List<Filter> modifiedFilters = new ArrayList<>();
             for (Filter subFilter : filter.getComponents()) {
                 Filter modifiedSubFilter = replaceLocalAttributes(subFilter, attributes);
                 modifiedFilters.add(modifiedSubFilter);
             }
-            // Создаем новый фильтр с той же логикой (AND или OR)
             return filter.getFilterType() == Filter.FILTER_TYPE_AND
                     ? Filter.createANDFilter(modifiedFilters)
                     : Filter.createORFilter(modifiedFilters);
         }
-        // Другие типы фильтров (например, presence, substring) оставляем без изменений
         return filter;
     }
 
-    // Метод для проверки домена в фильтре с учётом атрибутов
     private Filter checkDomainInFilter(Filter filter, List<ConfigProperties.LocalAttribute> attributes) {
         ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
         String targetDomain = targetConfig.getDomain();
@@ -98,7 +153,6 @@ public class LdapSearchMITM {
 
         if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
             String attributeName = filter.getAttributeName();
-            // Проверяем, есть ли атрибут в конфигурации и включён ли флаг local-domains-only
             Optional<ConfigProperties.LocalAttribute> matchingAttr = attributes.stream()
                     .filter(attr -> attr.getName().equalsIgnoreCase(attributeName) && attr.isLocalDomainsOnly())
                     .findFirst();
@@ -108,31 +162,33 @@ public class LdapSearchMITM {
                 if (!isDomainAllowed(email, targetDomain, localDomains)) {
                     logger.warn("Search rejected: email '{}' for attribute '{}' has a domain not in allowed list (target: {}, local: {})",
                             email, attributeName, targetDomain, localDomains);
-                    // Возвращаем фильтр, который не даст результатов
                     return Filter.createEqualityFilter("objectClass", "invalid");
                 }
             }
-        } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND ||
-                filter.getFilterType() == Filter.FILTER_TYPE_OR) {
-            // Рекурсивно проверяем дочерние фильтры
+        } else
+        if (
+            filter.getFilterType() == Filter.FILTER_TYPE_AND
+            ||
+            filter.getFilterType() == Filter.FILTER_TYPE_OR
+        ) {
             for (Filter subFilter : filter.getComponents()) {
                 Filter result = checkDomainInFilter(subFilter, attributes);
                 if (result != null) {
-                    return result; // Если хотя бы один фильтр отклонён, прерываем поиск
+                    return result;
                 }
             }
         }
-        return null; // Домен допустим или фильтр не подпадает под проверку
+        return null;
     }
 
-    // Извлечение значения фильтра (например, ivano@uwed.ac.uz из postalAddress=ivano@uwed.ac.uz)
     private String extractValueFromFilter(Filter filter) {
         if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
             String attributeName = filter.getAttributeName();
             if ("postalAddress".equalsIgnoreCase(attributeName)) {
                 return filter.getAssertionValue();
             }
-        } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
+        } else
+        if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
             for (Filter subFilter : filter.getComponents()) {
                 String value = extractValueFromFilter(subFilter);
                 if (value != null) {
@@ -143,7 +199,6 @@ public class LdapSearchMITM {
         return null;
     }
 
-    // Извлечение username из значения фильтра (например, ivano@uwed.ac.uz -> ivano)
     private String extractUsernameFromValue(String value) {
         if (value != null && value.contains("@")) {
             String username = value.split("@")[0];
@@ -154,12 +209,9 @@ public class LdapSearchMITM {
         return null;
     }
 
-    // Форматирование значения серверного фильтра на основе searchExpression
     private String formatServerFilterValue(String searchExpression, String username) {
         if (searchExpression.contains("[[email:username]]")) {
-            // Заменяем [[email:username]] на username
             String result = searchExpression.replace("[[email:username]]", username);
-            // Удаляем часть {{userPrincipalName}}=, оставляя только значение
             Pattern pattern = Pattern.compile("\\{\\{[^}]+\\}\\}=");
             Matcher matcher = pattern.matcher(result);
             if (matcher.find()) {
@@ -170,7 +222,6 @@ public class LdapSearchMITM {
         return username;
     }
 
-    // Извлечение имени атрибута из выражения (например, {{userPrincipalName}} -> userPrincipalName)
     private String extractAttributeName(String expression) {
         Pattern pattern = Pattern.compile("\\{\\{([^}]+)\\}\\}");
         Matcher matcher = pattern.matcher(expression);
@@ -180,14 +231,12 @@ public class LdapSearchMITM {
         return "";
     }
 
-    // Извлечение зависимых атрибутов из result-expression
     private Set<String> extractAttributesFromExpression(String resultExpression) {
         Set<String> attributes = new HashSet<>();
         if (resultExpression == null) {
             return attributes;
         }
 
-        // Ищем все вхождения {{attribute}}
         Pattern pattern = Pattern.compile("\\{\\{([^{}]+)\\}\\}");
         Matcher matcher = pattern.matcher(resultExpression);
         while (matcher.find()) {
@@ -198,43 +247,37 @@ public class LdapSearchMITM {
         return attributes;
     }
 
-    // Проверка, является ли строка email и извлечение username
     private String extractUsernameFromEmail(String email) {
         if (email != null && email.contains("@")) {
             String[] parts = email.split("@");
             if (parts.length == 2 && !parts[0].isEmpty() && !parts[1].isEmpty()) {
-                return parts[0]; // username
+                return parts[0];
             }
         }
         return null;
     }
 
-    // Проверка, входит ли домен в список разрешённых доменов
     private boolean isDomainAllowed(String email, String targetDomain, List<String> localDomains) {
         if (email == null || !email.contains("@")) {
             return false;
         }
         String domain = email.split("@")[1];
         return domain.equalsIgnoreCase(targetDomain) || localDomains.stream()
-                .anyMatch(allowedDomain -> domain.equalsIgnoreCase(allowedDomain));
+                .anyMatch(domain::equalsIgnoreCase);
     }
 
-    // Проверка, является ли строка DN (грубая проверка на наличие "dc=" или "cn=")
     private boolean isDnFormat(String bindDn) {
         return bindDn != null && (bindDn.toLowerCase().contains("dc=") || bindDn.toLowerCase().contains("cn="));
     }
 
-    // Обработка bindDN для BindRequest
     public String processBindExpression(String dn, String password, LDAPConnection conn) throws LDAPException {
         ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
 
-        // Если bindDN в формате DN (например, cn=ivan ivanovich,ou=it,dc=uwed,dc=edu), оставляем без изменений
         if (isDnFormat(dn)) {
             logger.debug("bindDN '{}' is in DN format, using as is", dn);
             return dn;
         }
 
-        // Проверяем, включено ли map-local-domains и является ли dn email
         if (targetConfig.isMapLocalDomains()) {
             String username = extractUsernameFromEmail(dn);
             if (username != null) {
@@ -245,17 +288,15 @@ public class LdapSearchMITM {
                 } else {
                     logger.warn("Email '{}' has a domain not in allowed list (target: {}, local: {}), rejecting BIND",
                             dn, targetConfig.getDomain(), targetConfig.getLocalDomains());
-                    return null; // Домен не разрешён, возвращаем null
+                    return null;
                 }
             }
         }
 
-        // Если dn не в формате email и map-local-domains не применимо, возвращаем исходный dn
         logger.debug("No mapping applied, using original bindDN: {}", dn);
         return dn;
     }
 
-    // Фильтр для клиентской фильтрации (временно отключен, пропускает все записи)
     public Predicate<SearchResultEntry> getFilter() {
         return entry -> {
             logger.debug("Client-side filtering is disabled, passing entry DN: {}", entry.getDN());
@@ -263,77 +304,91 @@ public class LdapSearchMITM {
         };
     }
 
-    // Обработчик для модификации результатов поиска
-    public BiFunction<SearchResultEntry, Integer, LDAPMessage> getEntryProcessor(ChannelHandlerContext ctx, List<String> requestedAttributes) {
-        return (entry, msgID) -> {
-            Map<String, Attribute> updatedAttributes = entry.getAttributes().stream().collect(Collectors.toMap(
-                    Attribute::getName, attr -> attr, (attr1, attr2) -> attr1, HashMap::new));
+    // в каждой из вовзращенных сервером записей вычислям локальные атрибуты по значениям серверным
+    public BiFunction<SearchResultEntry, Integer, LDAPMessage> getEntryProcessor(List<String> requestedAttributes, String filterValue) {
+        return (entry, messageId) -> {
+            // 1. Собираем зависимые атрибуты из resultExpression
+            Set<String> dependentAttributes = configProperties.getTargetConfig().getLocalAttributes().stream()
+                    .map(ConfigProperties.LocalAttribute::getResultExpression)
+                    .filter(Objects::nonNull)
+                    .flatMap(expr -> extractAttributesFromExpression(expr).stream())
+                    .collect(Collectors.toSet());
+            logger.debug("Dependent attributes: {}", dependentAttributes);
 
-            List<ConfigProperties.LocalAttribute> attributes = configProperties.getTargetConfig().getLocalAttributes();
-            Set<String> dependentAttributes = new HashSet<>();
+            // 2. Создаем список атрибутов для новой записи
+            List<Attribute> attributes = new ArrayList<>();
 
-            // Собираем все зависимые атрибуты из result-expression
-            for (ConfigProperties.LocalAttribute attr : attributes) {
-                String resultExpression = attr.getResultExpression();
-                if (resultExpression != null) {
-                    dependentAttributes.addAll(extractAttributesFromExpression(resultExpression));
+            // 3. Обработка серверных атрибутов
+            boolean returnAllAttributes = requestedAttributes == null ||
+                    requestedAttributes.isEmpty() ||
+                    requestedAttributes.contains("*");
+            if (returnAllAttributes) {
+                // Добавляем все серверные атрибуты
+                for (Attribute attr : entry.getAttributes()) {
+                    attributes.add(attr);
                 }
+                logger.debug("Returning all server attributes for clientMessageId: {}, DN: {}, requested: {}",
+                        messageId, entry.getDN(), requestedAttributes);
+            } else {
+                // Добавляем только запрошенные атрибуты
+                for (String attr : requestedAttributes) {
+                    Attribute serverAttr = entry.getAttribute(attr);
+                    if (serverAttr != null) {
+                        attributes.add(serverAttr);
+                    }
+                }
+                logger.debug("Returning requested attributes for clientMessageId: {}, DN: {}, attributes: {}",
+                        messageId, entry.getDN(), requestedAttributes);
             }
 
-            // Формируем локальные атрибуты на основе result-expression
-            for (ConfigProperties.LocalAttribute attr : attributes) {
-                String resultExpression = attr.getResultExpression();
-                if (resultExpression != null && !resultExpression.isEmpty()) {
-                    // Передаём сам attr, чтобы знать, включена ли опция local-domains-only
-                    String value = parseResultExpression(entry, resultExpression, ctx, attr);
+            // 4. Добавление локальных атрибутов
+            for (ConfigProperties.LocalAttribute localAttr : configProperties.getTargetConfig().getLocalAttributes()) {
+                String resultExpression = localAttr.getResultExpression();
+                if (resultExpression != null) {
+                    String value = evaluateExpression(resultExpression, entry);
                     if (value != null) {
-                        updatedAttributes.put(attr.getName(), new Attribute(attr.getName(), value));
-                        logger.debug("Set attribute {} to {} for entry DN: {}", attr.getName(), value, entry.getDN());
+                        attributes.add(new Attribute(localAttr.getName(), value));
+                        logger.debug("Added local attribute {}={} for clientMessageId: {}",
+                                localAttr.getName(), value, messageId);
                     }
                 }
             }
 
-            // Удаляем зависимые атрибуты, если они не запрошены клиентом или не разрешены
-            Iterator<Map.Entry<String, Attribute>> iterator = updatedAttributes.entrySet().iterator();
-            while (iterator.hasNext()) {
-                Map.Entry<String, Attribute> attrEntry = iterator.next();
-                String attrName = attrEntry.getKey();
-                boolean isDependent = dependentAttributes.stream().anyMatch(depAttr -> depAttr.equalsIgnoreCase(attrName));
-                boolean isRequested = requestedAttributes.stream().anyMatch(reqAttr -> reqAttr.equalsIgnoreCase(attrName));
-                boolean isGenerated = attributes.stream().anyMatch(localAttr -> localAttr.getName().equalsIgnoreCase(attrName));
-
-                // Проверяем, разрешено ли оставлять зависимые атрибуты
-                boolean allowDependentAttributes = attributes.stream()
-                        .filter(localAttr -> localAttr.getName().equalsIgnoreCase(attrName))
-                        .findFirst()
-                        .map(ConfigProperties.LocalAttribute::isDependentAttributes)
-                        .orElse(false);
-
-                if (isDependent && !isRequested && !isGenerated && !allowDependentAttributes) {
-                    logger.debug("Removing dependent attribute {} as it was not requested by client and dependent-attributes=false", attrName);
-                    iterator.remove();
-                }
+            // 5. Фильтрация зависимых атрибутов, если не запрошены
+            if (!returnAllAttributes) {
+                attributes = attributes.stream()
+                        .filter(attr -> {
+                            boolean isDependent = dependentAttributes.stream()
+                                    .anyMatch(depAttr -> depAttr.equalsIgnoreCase(attr.getName()));
+                            boolean isRequested = requestedAttributes.stream()
+                                    .anyMatch(reqAttr -> reqAttr.equalsIgnoreCase(attr.getName()));
+                            boolean isLocal = configProperties.getTargetConfig().getLocalAttributes().stream()
+                                    .anyMatch(localAttr -> localAttr.getName().equalsIgnoreCase(attr.getName()));
+                            // Сохраняем атрибут, если он запрошен, является локальным или не зависимый
+                            return isRequested || isLocal || !isDependent;
+                        })
+                        .collect(Collectors.toList());
+                logger.debug("Filtered attributes for clientMessageId: {}, remaining attributes: {}",
+                        messageId, attributes.stream().map(Attribute::getName).collect(Collectors.toList()));
             }
 
-            List<Attribute> updatedAttributesList = new ArrayList<>(updatedAttributes.values());
-            Entry updatedEntry = new Entry(entry.getDN(), updatedAttributesList);
+            // 6. Создаем новый Entry
+            Entry updatedEntry = new Entry(entry.getDN(), attributes);
             SearchResultEntry updatedSearchResultEntry = new SearchResultEntry(updatedEntry);
+
+            // 7. Формируем LDAPMessage
             SearchResultEntryProtocolOp entryOp = new SearchResultEntryProtocolOp(updatedSearchResultEntry);
-            return new LDAPMessage(msgID, entryOp);
+            return new LDAPMessage(messageId, entryOp);
         };
     }
 
-
-    // Парсинг result-expression с учётом нескольких атрибутов
-    private String parseResultExpression(SearchResultEntry entry, String expression, ChannelHandlerContext ctx, ConfigProperties.LocalAttribute localAttr) {
+    private String parseResultExpression(SearchResultEntry entry, String expression, String filterValue, ConfigProperties.LocalAttribute localAttr) {
         String newValue = expression;
         Set<String> dependentAttrs = extractAttributesFromExpression(expression);
         for (String depAttr : dependentAttrs) {
             String placeholder = "{{" + depAttr + "}}";
             String replacement = entry.getAttributeValue(depAttr);
             if (replacement == null) {
-                // Если атрибут не вернулся с сервера, используем запасное значение
-                String filterValue = (String) ctx.channel().attr(AttributeKey.valueOf("filterValue")).get();
                 if (filterValue != null && filterValue.contains("@")) {
                     replacement = filterValue.substring(0, filterValue.indexOf("@"));
                     logger.debug("Using fallback value for {}: {}", depAttr, replacement);
@@ -345,16 +400,14 @@ public class LdapSearchMITM {
             newValue = newValue.replace(placeholder, replacement);
         }
 
-        // Проверяем домен в результате, только если local-domains-only=true
         if (localAttr.isLocalDomainsOnly() && newValue.contains("@")) {
             String domain = newValue.substring(newValue.indexOf("@") + 1);
             ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
             String targetDomain = targetConfig.getDomain();
             List<String> localDomains = targetConfig.getLocalDomains() != null ? targetConfig.getLocalDomains() : Collections.emptyList();
 
-            // Проверяем, совпадает ли домен с target.domain или одним из local-domains
             boolean isDomainAllowed = domain.equalsIgnoreCase(targetDomain) ||
-                    localDomains.stream().anyMatch(allowedDomain -> domain.equalsIgnoreCase(allowedDomain));
+                    localDomains.stream().anyMatch(domain::equalsIgnoreCase);
             if (!isDomainAllowed) {
                 logger.warn("Invalid domain in result for attribute {}: {}. Expected target domain: {}, local domains: {}",
                         localAttr.getName(), domain, targetDomain, localDomains);
@@ -364,55 +417,63 @@ public class LdapSearchMITM {
         return newValue;
     }
 
-//    //////////// Создаем предикат для фильтрации
-//    public static Predicate<SearchResultEntry> filter = entry -> {
-//        String mail = entry.getAttributeValue("mail");
-//        String cn = entry.getAttributeValue("cn");
-//        return true;
-//        //return (mail != null && mail.contains("@example.com")) &&
-//    };
-//
-//    //////////// Создаем функцию-обработчик для модификации записи
-//    public static BiFunction<SearchResultEntry, Integer, LDAPMessage> entryProcessor = (entry, msgID) -> {
-//        // Извлекаем текущие атрибуты записи в Map
-//        Map<String, Attribute> updatedAttributes = entry.getAttributes().stream()
-//                .collect(Collectors.toMap(
-//                        Attribute::getName,
-//                        attr -> attr,
-//                        (attr1, attr2) -> attr1, // В случае дубликатов берем первый атрибут
-//                        HashMap::new
-//                ));
-//
-//        //// Пример модификации атрибутов:
-//        //// 1. Удаляем атрибут cn
-//        //updatedAttributes.removeIf(attr -> attr.getName().equals("cn"));
-//
-//        //// 2. Изменяем атрибут mail
-//        //updatedAttributes.removeIf(attr -> attr.getName().equals("mail"));
-//        //updatedAttributes.add(new Attribute("mail", "newemail@example.com"));
-//
-//        //// 3. Добавляем новый атрибут telephoneNumber
-//        //updatedAttributes.add(new Attribute("telephoneNumber", "+1234567890"));
-//
-//        updatedAttributes.put(
-//                "registeredAddress",
-//                new Attribute("registeredAddress", updatedAttributes.get("sAMAccountName").getValue() + "@uwed.uz")
-//        );
-//        updatedAttributes.put(
-//                "postalAddress",
-//                new Attribute("postalAddress", updatedAttributes.get("sAMAccountName").getValue() + "@uwed.ac.uz")
-//        );
-//
-//        // Преобразуем Map обратно в List для создания Entry
-//        List<Attribute> updatedAttributesList = new ArrayList<>(updatedAttributes.values());
-//        // Создаем новый Entry с обновленными атрибутами
-//        Entry updatedEntry = new Entry(entry.getDN(), updatedAttributesList);
-//        // Преобразуем обновленный Entry в SearchResultEntry
-//        SearchResultEntry updatedSearchResultEntry = new SearchResultEntry(updatedEntry);
-//        // Преобразуем SearchResultEntry в SearchResultEntryProtocolOp
-//        SearchResultEntryProtocolOp entryOp = new SearchResultEntryProtocolOp(updatedSearchResultEntry);
-//        // Создаем LDAPMessage с переданным messageID
-//        return new LDAPMessage(msgID, entryOp);
-//    };
+    // Новая stateless-функция
+    public List<String> enhanceRequestedAttributes(List<String> requestedAttributes) {
+        List<String> attributesToRequest = new ArrayList<>();
+
+        if (requestedAttributes == null || requestedAttributes.isEmpty() || requestedAttributes.contains("*")) {
+            attributesToRequest.add("*");
+            logger.debug("Client requested '*' or no attributes, adding '*' to request all server attributes");
+        } else {
+            attributesToRequest.addAll(requestedAttributes);
+            logger.debug("Requested attributes by client: {}", requestedAttributes);
+
+            // Добавляем зависимые атрибуты для локальных вычислений
+            for (ConfigProperties.LocalAttribute attr : configProperties.getTargetConfig().getLocalAttributes()) {
+                Set<String> attrNames = extractAttributeNames(attr.getResultExpression());
+                for (String depAttr : attrNames) {
+                    if (!attributesToRequest.contains(depAttr) && !depAttr.equals("*")) {
+                        attributesToRequest.add(depAttr);
+                        logger.debug("Added dependent attribute to request: {}", depAttr);
+                    }
+                }
+            }
+        }
+        return attributesToRequest;
+    }
+
+    private Set<String> extractAttributeNames(String resultExpression) {
+        Set<String> attributeNames = new HashSet<>();
+        if (resultExpression != null) {
+            Pattern pattern = Pattern.compile("\\{\\{([^{}]+)\\}\\}");
+            Matcher matcher = pattern.matcher(resultExpression);
+            while (matcher.find()) {
+                attributeNames.add(matcher.group(1).trim());
+            }
+        }
+        return attributeNames;
+    }
+
+    private String evaluateExpression(String resultExpression, SearchResultEntry entry) {
+        if (resultExpression == null || entry == null) {
+            return null;
+        }
+
+        try {
+            String result = resultExpression;
+            Set<String> attrNames = extractAttributeNames(resultExpression);
+            for (String attrName : attrNames) {
+                Attribute attr = entry.getAttribute(attrName);
+                String value = (attr != null && attr.getValues().length > 0) ? attr.getValues()[0] : "";
+                result = result.replace("{{" + attrName + "}}", value);
+            }
+
+            logger.debug("Evaluated expression {} to value: {}", resultExpression, result);
+            return result.isEmpty() ? null : result;
+        } catch (Exception e) {
+            logger.error("Failed to evaluate expression: {}, error: {}", resultExpression, e.getMessage());
+            return null;
+        }
+    }
 
 }

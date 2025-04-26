@@ -1,5 +1,6 @@
 package edu.uwed.authManager.configuration;
 
+import com.unboundid.ldap.sdk.DereferencePolicy;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -73,7 +74,7 @@ public class ConfigProperties {
             private String userDn;
             private String password;
             private boolean ignoreSslVerification = false;
-            private String referralHandling = "follow"; // follow | ignore | throw
+            ///private String referralHandling = "follow"; // follow | ignore | throw
             private String sslBundle;
             private String sslProtocols;
             private String sslCiphers;
@@ -82,7 +83,13 @@ public class ConfigProperties {
             private List<String> localDomains = new ArrayList<>(); // local.ldap.target.local-domains
             private boolean mapLocalDomains = true; // redirect <username>@local-domains[*] BINDs to <username>@domain
             private int clientTimeoutSec = 5; //
-            private long disconnectDelayMs = 0; // after cleint's UNBIND request
+            private long operationTimeoutMs = 5000; // Таймаут для синхронных операций (BIND, SEARCH)
+            private long searchAsyncTimeoutSec = 5; // Таймаут для асинхронного SEARCH
+            private int poolMaxConnections = 50; // Максимум соединений в пуле
+            private int threadPoolSize = 50; // Размер пула потоков для синхронных операций
+            private long disconnectDelayMs = 500; // Задержка перед закрытием соединения
+            private DereferencePolicy referralPolicy = DereferencePolicy.NEVER; // NEVER | SEARCHING | FINDING | ALWAYS
+            private int maxRecords = 10000;
 
             public String getUrl() {
                 String protocol = "ldap";
@@ -100,6 +107,31 @@ public class ConfigProperties {
 
             public boolean isLdaps() {
                 return "ldaps".equalsIgnoreCase(security)  || "ssl".equalsIgnoreCase(security);
+            }
+
+            public void setReferralPolicy(String policy) {
+                if (policy == null || policy.trim().isEmpty()) {
+                    this.referralPolicy = DereferencePolicy.NEVER;
+                    return;
+                }
+                switch (policy.trim().toUpperCase()) {
+                    case "NEVER":
+                        this.referralPolicy = DereferencePolicy.NEVER;
+                        break;
+                    case "SEARCHING":
+                        this.referralPolicy = DereferencePolicy.SEARCHING;
+                        break;
+                    case "FINDING":
+                        this.referralPolicy = DereferencePolicy.FINDING;
+                        break;
+                    case "ALWAYS":
+                        this.referralPolicy = DereferencePolicy.ALWAYS;
+                        break;
+                    default:
+                        throw new IllegalArgumentException(
+                            String.format("Invalid DereferencePolicy value '%s'. Expected one of: NEVER, SEARCHING, FINDING, ALWAYS", policy)
+                    );
+                }
             }
         }
 
@@ -164,9 +196,7 @@ public class ConfigProperties {
         private String name;
         private String searchExpression;
         private String resultExpression;
-//        private String bindExpression;
         private boolean localDomainsOnly; // Обновлённое название флага
-        private boolean dependentAttributes;
     }
 
 }

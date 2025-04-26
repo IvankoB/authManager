@@ -40,17 +40,19 @@ public class LDAPConnectionPoolFactory {
                     socketFactory
             );
             try {
+                long startTime = System.currentTimeMillis();
                 // НЕ выполняем bind здесь, чтобы соединение оставалось непривязанным
                 connectionPool = new LDAPConnectionPool(
                         connection,
                         1,
-                        10,
+                        configProperties.getTargetConfig().getPoolMaxConnections(),
                         3,
                         null,
                         true
                 );
-                logger.info("LDAPConnectionPool created successfully for {}:{} (protocol: {})",
-                        targetServerInfo.getHost(), targetServerInfo.getPort(), targetServerInfo.getProto());
+                logger.info("LDAPConnectionPool created successfully for {}:{} (protocol: {}) in {} ms",
+                        targetServerInfo.getHost(), targetServerInfo.getPort(), targetServerInfo.getProto(),
+                        System.currentTimeMillis() - startTime);
             } catch (LDAPException e) {
                 connection.close();
                 logger.error("Failed to create LDAPConnectionPool for {}:{}: {}",

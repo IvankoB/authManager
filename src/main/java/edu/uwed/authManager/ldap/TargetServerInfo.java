@@ -30,7 +30,7 @@ public class TargetServerInfo {
 
     private LDAPMessage ldapMessage;
 
-    private int messageType;
+    private byte messageType;
 
     private int messageId;
     private final LdapConstants.BIND_STATUS bindStatus;
@@ -39,7 +39,7 @@ public class TargetServerInfo {
             LdapConstants.PROXY_ENDPOINT endpoint,
             ConfigProperties configProperties,
             LDAPMessage ldapMessage,
-            int messageType,
+            byte messageType,
             int messageId,
             LdapConstants.BIND_STATUS bindStatus
     ) {

@@ -25,6 +25,9 @@ public class LdapConstants {
     public enum PROXY_ENDPOINT {
         NONE, PROXY, TARGET
     }
+    public enum FILTER_TYPE {
+        REGULAR, DN
+    }
 
 }
 

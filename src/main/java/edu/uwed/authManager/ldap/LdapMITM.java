@@ -18,18 +18,28 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
-public class LdapSearchMITM {
-    private static final Logger logger = LoggerFactory.getLogger(LdapSearchMITM.class);
+public class LdapMITM {
+    private static final Logger logger = LoggerFactory.getLogger(LdapMITM.class);
     private final ConfigProperties configProperties;
+
+    @Data
+    public static class LocalFilterCondition {
+        private final String type;        // "SIMPLE", "OR", "AND", "NOT"
+        private final LdapConstants.FILTER_TYPE filterType;  // Используем перечисление из LdapConstants
+        private final String attribute;   // Например, "distinguishedName"
+        private final List<String> values; // Для SIMPLE — одно значение, для OR — список значений
+        private final boolean autoBaseDn; // Нужно ли добавлять baseDN
+    }
 
     @Data
     public static class FilterResult {
         private final Filter filter;
         private final String filterValue;
+//        private final List<LocalFilterCondition> localFilterConditions; // Добавляем условия в результат
     }
 
     @Autowired
-    public LdapSearchMITM(ConfigProperties configProperties) {
+    public LdapMITM(ConfigProperties configProperties) {
         this.configProperties = configProperties;
     }
 

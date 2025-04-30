@@ -6,8 +6,6 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.ssl.SslContext;
-import io.netty.handler.timeout.ReadTimeoutHandler;
-import io.netty.handler.timeout.WriteTimeoutHandler;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
@@ -19,7 +17,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
     private final SSLContext proxyTlsContext;
     private final SSLSocketFactory targetSecureSocketFactory;
     private final LDAPConnectionPoolFactory targetConnectionPoolFactory;
-    private final LdapSearchMITM ldapSearchMITM;
+    private final LdapMITM ldapMITM;
     private final boolean useSsl;
 
     public LdapServerInitializer(
@@ -28,7 +26,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
             SSLContext proxyTlsContext,
             SSLSocketFactory targetSecureSocketFactory,
             LDAPConnectionPoolFactory targetConnectionPoolFactory,
-            LdapSearchMITM ldapSearchMITM,
+            LdapMITM ldapMITM,
             boolean useSsl
     ) {
         this.configProperties = configProperties;
@@ -36,7 +34,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
         this.proxyTlsContext = proxyTlsContext;
         this.targetSecureSocketFactory = targetSecureSocketFactory;
         this.targetConnectionPoolFactory = targetConnectionPoolFactory;
-        this.ldapSearchMITM = ldapSearchMITM;
+        this.ldapMITM = ldapMITM;
         this.useSsl = useSsl;
     }
 
@@ -55,7 +53,7 @@ public class LdapServerInitializer extends ChannelInitializer<SocketChannel> {
 /////////        pipeline.addLast(new WriteTimeoutHandler(timeout));
                 // Добавляем обработчик запросов
         pipeline.addLast(new LdapRequestHandler(
-            configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory, targetConnectionPoolFactory,ldapSearchMITM
+            configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory, targetConnectionPoolFactory, ldapMITM
         ));
     }
 

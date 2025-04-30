@@ -27,7 +27,7 @@ public class LdapProxyServer {
     private final SSLContext proxyTlsContext;
     private final SSLSocketFactory targetSecureSocketFactory;
     private final LDAPConnectionPoolFactory targetConnectionPoolFactory;
-    private final LdapSearchMITM ldapSearchMITM;
+    private final LdapMITM ldapMITM;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -41,14 +41,14 @@ public class LdapProxyServer {
             @Qualifier("proxyLdapTlsContext") SSLContext proxyTlsContext,
             @Qualifier("targetLdapSecureSocketFactory") SSLSocketFactory targetSecureSocketFactory,
             @Qualifier("targetLdapConnectionPoolFactory") LDAPConnectionPoolFactory targetConnectionPoolFactory,
-            LdapSearchMITM ldapSearchMITM
+            LdapMITM ldapMITM
     ) {
         this.configProperties = configProperties;
         this.proxySslContext = proxySslContext;
         this.proxyTlsContext = proxyTlsContext;
         this.targetSecureSocketFactory = targetSecureSocketFactory;
         this.targetConnectionPoolFactory = targetConnectionPoolFactory;
-        this.ldapSearchMITM = ldapSearchMITM;
+        this.ldapMITM = ldapMITM;
     }
 
     @PostConstruct
@@ -64,7 +64,7 @@ public class LdapProxyServer {
         ldapBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,false
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory, ldapMITM,false
                 ))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);
@@ -74,7 +74,7 @@ public class LdapProxyServer {
         ldapsBootstrap.group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new LdapServerInitializer(
-                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory,ldapSearchMITM,true
+                    configProperties, proxySslContext, proxyTlsContext, targetSecureSocketFactory,targetConnectionPoolFactory, ldapMITM,true
                 ))
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.SO_KEEPALIVE, true);

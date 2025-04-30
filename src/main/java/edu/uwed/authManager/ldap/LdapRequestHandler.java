@@ -3,8 +3,6 @@ package edu.uwed.authManager.ldap;
 import com.unboundid.asn1.ASN1StreamReader;
 import com.unboundid.ldap.protocol.*;
 import com.unboundid.ldap.sdk.*;
-import com.unboundid.ldap.sdk.extensions.StartTLSExtendedRequest;
-import com.unboundid.util.ByteStringBuffer;
 import edu.uwed.authManager.configuration.ConfigProperties;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -23,8 +21,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import com.unboundid.ldap.sdk.SimpleBindRequest;
 
@@ -35,14 +31,14 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private static final AttributeKey<Integer> LAST_MESSAGE_ID = AttributeKey.valueOf("lastMessageId");
     private static final AttributeKey<Byte> LAST_MESSAGE_TYPE = AttributeKey.valueOf("lastMessageType");
     private static final AttributeKey<Set<String>> REQUESTED_ATTRIBUTES = AttributeKey.valueOf("requestedAttributes");
-    private static final AttributeKey<LdapSearchMITM> LDAP_SEARCH_MITM = AttributeKey.valueOf("ldapSearchMITM");
+    private static final AttributeKey<LdapMITM> LDAP_SEARCH_MITM = AttributeKey.valueOf("ldapSearchMITM");
 
     private final ConfigProperties configProperties;
     private final SslContext proxySslContext;
     private final SSLContext proxyTlsContext;
     private final SSLSocketFactory targetSecureSocketFactory;
     private final LDAPConnectionPoolFactory targetConnectionPoolFactory;
-    private final LdapSearchMITM ldapSearchMITM; // Новый член класса
+    private final LdapMITM ldapMITM; // Новый член класса
     private final ExecutorService executor;
 
 //    private int lastMessageId = -1; // Сохраняем последний messageId
@@ -60,14 +56,14 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
             SSLContext proxyTlsContext,
             SSLSocketFactory targetSecureSocketFactory,
             LDAPConnectionPoolFactory targetConnectionPoolFactory,
-            LdapSearchMITM ldapSearchMITM
+            LdapMITM ldapMITM
     ) {
         this.configProperties = configProperties;
         this.proxySslContext = proxySslContext;
         this.proxyTlsContext = proxyTlsContext;
         this.targetSecureSocketFactory = targetSecureSocketFactory;
         this.targetConnectionPoolFactory = targetConnectionPoolFactory;
-        this.ldapSearchMITM = ldapSearchMITM;
+        this.ldapMITM = ldapMITM;
         this.executor = Executors.newFixedThreadPool(configProperties.getTargetConfig().getThreadPoolSize());
     }
 
@@ -125,7 +121,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                                 String bindDN = bindOp.getBindDN();
                                 String password = bindOp.getSimplePassword() != null ? bindOp.getSimplePassword().toString() : null;
 
-                                String effectiveBindDN = ldapSearchMITM.processBindExpression(bindDN, password, conn);
+                                String effectiveBindDN = ldapMITM.processBindExpression(bindDN, password, conn);
                                 if (effectiveBindDN == null) {
                                     logger.warn("BIND rejected for bindDN '{}': domain not allowed", bindDN);
                                     LdapUtils.sendBindResponse(ctx, clientMessageId, ResultCode.INVALID_CREDENTIALS);
@@ -163,16 +159,16 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
                                 ctx.channel().attr(REQUESTED_ATTRIBUTES).set(new HashSet<>(requestedAttributes));
 
-                                List<String> attributesToRequest = ldapSearchMITM.enhanceRequestedAttributes(requestedAttributes);
+                                List<String> attributesToRequest = ldapMITM.enhanceRequestedAttributes(requestedAttributes);
 
-                                LdapSearchMITM.FilterResult filterResult = ldapSearchMITM.generateLdapFilter(originalFilter);
+                                LdapMITM.FilterResult filterResult = ldapMITM.generateLdapFilter(originalFilter);
                                 Filter enhancedFilter = filterResult.getFilter();
                                 String filterValue = filterResult.getFilterValue();
 
                                 LdapProxyStreamingSearchResultListener listener = new LdapProxyStreamingSearchResultListener(
                                         ctx,
-                                        ldapSearchMITM.getFilter(),
-                                        ldapSearchMITM.getEntryProcessor(requestedAttributes, filterValue),
+                                        ldapMITM.getFilter(),
+                                        ldapMITM.getEntryProcessor(requestedAttributes, filterValue),
                                         clientMessageId,
                                         pool, conn
                                 );
@@ -385,7 +381,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
         logger.info("Client connected: {}", ctx.channel().remoteAddress());
         ctx.channel().attr(LAST_MESSAGE_ID).set(-1);
         ctx.channel().attr(LAST_MESSAGE_TYPE).set((byte) -1);
-        ctx.channel().attr(LDAP_SEARCH_MITM).set(new LdapSearchMITM(configProperties));
+        ctx.channel().attr(LDAP_SEARCH_MITM).set(new LdapMITM(configProperties));
     }
 
     @Override

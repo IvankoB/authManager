@@ -1,6 +1,7 @@
 package edu.uwed.authManager.configuration;
 
 import com.unboundid.ldap.sdk.DereferencePolicy;
+import edu.uwed.authManager.ldap.LdapConstants;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -79,6 +80,7 @@ public class ConfigProperties {
             private String sslProtocols;
             private String sslCiphers;
             private List<LocalAttribute> localAttributes = new ArrayList<>();
+            private List<LocalFilter> localFilters = new ArrayList<>();
             private String domain; // local.ldap.target.domain
             private List<String> localDomains = new ArrayList<>(); // local.ldap.target.local-domains
             private boolean mapLocalDomains = true; // redirect <username>@local-domains[*] BINDs to <username>@domain
@@ -197,6 +199,33 @@ public class ConfigProperties {
         private String searchExpression;
         private String resultExpression;
         private boolean localDomainsOnly; // Обновлённое название флага
+    }
+
+    @Data
+    public static class LocalFilter {
+        private String attribute; // Например, "dn" или "distinguishedName"
+        private LdapConstants.FILTER_TYPE type;      // "dn" или "regular"
+        private boolean autoBaseDn; // Автоматически добавлять baseDN
+        private String baseDn;    // Конкретный baseDN для фильтра (пока не используется)
+
+        public void setType (String type) {
+            if (type == null || type.trim().isEmpty()) {
+                this.type = LdapConstants.FILTER_TYPE.REGULAR;
+                return;
+            }
+            switch (type.trim().toUpperCase()) {
+                case "REGULAR":
+                    this.type = LdapConstants.FILTER_TYPE.REGULAR;
+                    break;
+                case "DN":
+                    this.type = LdapConstants.FILTER_TYPE.DN;
+                    break;
+                default:
+                    throw new IllegalArgumentException(
+                        String.format("Invalid local filter type value '%s'. Expected one of: REGULAR, DN", type)
+                    );
+            }
+        }
     }
 
 }

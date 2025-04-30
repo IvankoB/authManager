@@ -92,6 +92,42 @@ public class ConfigProperties {
             private long disconnectDelayMs = 500; // Задержка перед закрытием соединения
             private DereferencePolicy referralPolicy = DereferencePolicy.NEVER; // NEVER | SEARCHING | FINDING | ALWAYS
             private int maxRecords = 10000;
+            private String defaultBase;
+
+            @Data
+            public static class LocalAttribute {
+                private String name;
+                private String searchExpression;
+                private String resultExpression;
+                private boolean localDomainsOnly; // Обновлённое название флага
+            }
+
+            @Data
+            public static class LocalFilter {
+                private String attribute; // Например, "dn" или "distinguishedName"
+                private LdapConstants.FILTER_TYPE type;      // "dn" или "regular"
+                private boolean autoBaseDn; // Автоматически добавлять baseDN
+                private String baseDn;    // Конкретный baseDN для фильтра (пока не используется)
+
+                public void setType (String type) {
+                    if (type == null || type.trim().isEmpty()) {
+                        this.type = LdapConstants.FILTER_TYPE.REGULAR;
+                        return;
+                    }
+                    switch (type.trim().toUpperCase()) {
+                        case "REGULAR":
+                            this.type = LdapConstants.FILTER_TYPE.REGULAR;
+                            break;
+                        case "DN":
+                            this.type = LdapConstants.FILTER_TYPE.DN;
+                            break;
+                        default:
+                            throw new IllegalArgumentException(
+                                    String.format("Invalid local filter type value '%s'. Expected one of: REGULAR, DN", type)
+                            );
+                    }
+                }
+            }
 
             public String getUrl() {
                 String protocol = "ldap";
@@ -193,39 +229,6 @@ public class ConfigProperties {
         }
     }
 
-    @Data
-    public static class LocalAttribute {
-        private String name;
-        private String searchExpression;
-        private String resultExpression;
-        private boolean localDomainsOnly; // Обновлённое название флага
-    }
 
-    @Data
-    public static class LocalFilter {
-        private String attribute; // Например, "dn" или "distinguishedName"
-        private LdapConstants.FILTER_TYPE type;      // "dn" или "regular"
-        private boolean autoBaseDn; // Автоматически добавлять baseDN
-        private String baseDn;    // Конкретный baseDN для фильтра (пока не используется)
-
-        public void setType (String type) {
-            if (type == null || type.trim().isEmpty()) {
-                this.type = LdapConstants.FILTER_TYPE.REGULAR;
-                return;
-            }
-            switch (type.trim().toUpperCase()) {
-                case "REGULAR":
-                    this.type = LdapConstants.FILTER_TYPE.REGULAR;
-                    break;
-                case "DN":
-                    this.type = LdapConstants.FILTER_TYPE.DN;
-                    break;
-                default:
-                    throw new IllegalArgumentException(
-                        String.format("Invalid local filter type value '%s'. Expected one of: REGULAR, DN", type)
-                    );
-            }
-        }
-    }
 
 }

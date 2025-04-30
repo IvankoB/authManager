@@ -156,38 +156,39 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                                 SearchRequestProtocolOp searchRequestOp = ldapMessage.getSearchRequestProtocolOp();
                                 Filter originalFilter = searchRequestOp.getFilter();
                                 List<String> requestedAttributes = searchRequestOp.getAttributes();
+                                String searchBaseDN = searchRequestOp.getBaseDN();
 
                                 ctx.channel().attr(REQUESTED_ATTRIBUTES).set(new HashSet<>(requestedAttributes));
 
                                 List<String> attributesToRequest = ldapMITM.enhanceRequestedAttributes(requestedAttributes);
 
-                                LdapMITM.FilterResult filterResult = ldapMITM.generateLdapFilter(originalFilter);
+                                LdapMITM.FilterResult filterResult = ldapMITM.generateLdapFilter(originalFilter, searchBaseDN);
                                 Filter enhancedFilter = filterResult.getFilter();
-                                String filterValue = filterResult.getFilterValue();
+                                List<Map.Entry<String, String>> filterValues = filterResult.getFilterValues();
+                                List<LdapMITM.LocalFilterCondition> localFilterConditions = filterResult.getLocalFilterConditions();
 
                                 LdapProxyStreamingSearchResultListener listener = new LdapProxyStreamingSearchResultListener(
                                         ctx,
-                                        ldapMITM.getFilter(),
-                                        ldapMITM.getEntryProcessor(requestedAttributes, filterValue),
+                                        ldapMITM.getFilter(localFilterConditions),
+                                        ldapMITM.getEntryProcessor(requestedAttributes, filterValues),
                                         clientMessageId,
                                         pool, conn
                                 );
 
                                 SearchRequest searchRequest = new SearchRequest(
-                                    listener,
-                                    searchRequestOp.getBaseDN(),
-                                    searchRequestOp.getScope(),
-                                    configProperties.getTargetConfig().getReferralPolicy(),
-                                    (int)configProperties.getTargetConfig().getMaxRecords(),
-                                    (int)configProperties.getTargetConfig().getSearchAsyncTimeoutSec(),
-                                    false,
-                                    enhancedFilter,
-                                    attributesToRequest.toArray(new String[0])
+                                        listener,
+                                        searchRequestOp.getBaseDN(),
+                                        searchRequestOp.getScope(),
+                                        configProperties.getTargetConfig().getReferralPolicy(),
+                                        (int)configProperties.getTargetConfig().getMaxRecords(),
+                                        (int)configProperties.getTargetConfig().getSearchAsyncTimeoutSec(),
+                                        false,
+                                        enhancedFilter,
+                                        attributesToRequest.toArray(new String[0])
                                 );
 
                                 AsyncRequestID requestId = conn.asyncSearch(searchRequest);
-                                logger.debug("Submitted SEARCH task for clientMessageId: {}, attributes: {}",
-                                        clientMessageId, attributesToRequest);
+                                logger.debug("Submitted SEARCH task for clientMessageId: {}, attributes: {}", clientMessageId, attributesToRequest);
                             } catch (LDAPException e) {
                                 logger.error("Search initiation failed for messageId {}: {}", clientMessageId, e.getMessage(), e);
                                 LdapUtils.sendSearchDoneResponse(ctx, clientMessageId, e.getResultCode());

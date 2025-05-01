@@ -359,9 +359,19 @@ public class LdapMITM {
         return filter;
     }
 
-
     private Filter checkDomainInFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalAttribute> localAttributes) {
-        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+        if (filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
+            String attributeName = filter.getAttributeName().toLowerCase();
+            Optional<ConfigProperties.TargetConfig.LocalAttribute> matchedAttribute = localAttributes.stream()
+                    .filter(attr -> attr.getName().equalsIgnoreCase(attributeName) && attr.isLocalDomainsOnly())
+                    .findFirst();
+            if (matchedAttribute.isPresent()) {
+                // Для фильтров типа PRESENCE (например, postalAddress=*) считаем домен валидным,
+                // так как значения нет, и мы не можем проверить домен
+                return null;
+            }
+            return null; // Атрибут не требует проверки домена
+        } else if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
             String attributeName = filter.getAttributeName().toLowerCase();
             Optional<ConfigProperties.TargetConfig.LocalAttribute> matchedAttribute = localAttributes.stream()
                     .filter(attr -> attr.getName().equalsIgnoreCase(attributeName) && attr.isLocalDomainsOnly())
@@ -393,7 +403,7 @@ public class LdapMITM {
                     boolean isInvalid = modifiedSubFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY
                             && "invalid".equals(modifiedSubFilter.getAssertionValue());
                     if (filter.getFilterType() == Filter.FILTER_TYPE_OR && isInvalid) {
-                        continue; // Пропускаем невалидные подфильтры для OR
+                        continue;
                     }
                     modifiedComponents.add(modifiedSubFilter);
                     if (!isInvalid) {
@@ -404,14 +414,13 @@ public class LdapMITM {
                     modifiedComponents.add(subFilter);
                     allInvalid = false;
                     // Проверяем, содержит ли подфильтр доменные атрибуты
-                    if (subFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+                    if (subFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY || subFilter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
                         String attributeName = subFilter.getAttributeName().toLowerCase();
                         if (localAttributes.stream().anyMatch(attr -> attr.getName().equalsIgnoreCase(attributeName) && attr.isLocalDomainsOnly())) {
                             hasDomainAttribute = true;
                             hasValidDomains = true;
                         }
                     } else if (subFilter.getFilterType() == Filter.FILTER_TYPE_AND || subFilter.getFilterType() == Filter.FILTER_TYPE_OR) {
-                        // Рекурсивно проверяем, есть ли доменные атрибуты в подфильтрах
                         if (containsDomainAttributes(subFilter, localAttributes)) {
                             hasDomainAttribute = true;
                             hasValidDomains = true;
@@ -678,19 +687,19 @@ public class LdapMITM {
                 }
             }
 
+            // Добавляем локальные атрибуты, если они запрошены или запрошены все атрибуты
             for (ConfigProperties.TargetConfig.LocalAttribute localAttr : configProperties.getTargetConfig().getLocalAttributes()) {
                 String resultExpression = localAttr.getResultExpression();
                 if (resultExpression != null) {
-                    String value = null;
-                    Optional<Map.Entry<String, String>> matchingValue = filterValues.stream()
-                            .filter(entry1 -> entry1.getKey().equalsIgnoreCase(localAttr.getName()))
-                            .findFirst();
-                    if (matchingValue.isPresent()) {
-                        value = evaluateExpression(resultExpression, entry, matchingValue.get().getValue(), localAttr);
-                    }
-                    if (value != null) {
-                        attributes.add(new Attribute(localAttr.getName(), value));
-                        logger.debug("Added local attribute {}={} for clientMessageId: {}", localAttr.getName(), value, messageId);
+                    // Проверяем, запрошен ли этот локальный атрибут
+                    boolean isRequested = returnAllAttributes || requestedAttributes.stream()
+                            .anyMatch(reqAttr -> reqAttr.equalsIgnoreCase(localAttr.getName()));
+                    if (isRequested) {
+                        String value = evaluateExpression(resultExpression, entry, null, localAttr);
+                        if (value != null) {
+                            attributes.add(new Attribute(localAttr.getName(), value));
+                            logger.debug("Added local attribute {}={} for clientMessageId: {}", localAttr.getName(), value, messageId);
+                        }
                     }
                 }
             }
@@ -715,6 +724,7 @@ public class LdapMITM {
             return new LDAPMessage(messageId, entryOp);
         };
     }
+
 
     private String parseResultExpression(
         SearchResultEntry entry,
@@ -765,21 +775,120 @@ public class LdapMITM {
 
         List<String> attributesToRequest = new ArrayList<>();
 
-        // Шаг 1: Проверяем, есть ли "*" или пустой список
-        if (requestedAttributes == null || requestedAttributes.isEmpty() || requestedAttributes.contains("*")) {
+        // Нормализуем requestedAttributes
+        List<String> normalizedAttributes;
+        if (requestedAttributes == null) {
+            normalizedAttributes = Collections.singletonList("*");
+            logger.debug("requestedAttributes is null, assuming all attributes requested: {}", normalizedAttributes);
+        } else {
+            normalizedAttributes = new ArrayList<>(requestedAttributes);
+            // Проверяем, есть ли подозрительные элементы, которые могут быть именами файлов
+            boolean hasSuspiciousAttributes = normalizedAttributes.stream()
+                .anyMatch(
+                    attr -> attr.contains(".") || attr.contains("/") || attr.contains("\\")
+                );
+            if (hasSuspiciousAttributes) {
+                logger.warn("Requested attributes contain elements that look like filenames: {}. This might be due to unescaped '*' in the command line.", normalizedAttributes);
+            }
+            logger.debug("Requested attributes: {}", normalizedAttributes);
+        }
+
+        // Шаг 1: Собираем все зависимые атрибуты, необходимые для локальных вычислений
+        Set<String> dependentAttributes = new HashSet<>();
+        for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
+            if (attr.getResultExpression() != null) {
+                Set<String> attrNames = extractAttributeNames(attr.getResultExpression());
+                for (String depAttr : attrNames) {
+                    if (!depAttr.equals("*")) {
+                        dependentAttributes.add(depAttr);
+                        logger.debug("Added dependent attribute for local computation: {}", depAttr);
+                    }
+                }
+            }
+        }
+
+        // Шаг 2: Проверяем, есть ли "*" или пустой список
+        if (normalizedAttributes.isEmpty() || normalizedAttributes.contains("*")) {
             attributesToRequest.add("*");
-            logger.debug("Client requested '*' or no attributes, requesting all server attributes: ['*']");
+            attributesToRequest.addAll(dependentAttributes);
+            logger.debug("Client requested '*' or no attributes, requesting all server attributes plus dependent attributes: {}", attributesToRequest);
             return attributesToRequest;
         }
 
-        // Шаг 2: Фильтруем запрошенные атрибуты, исключая локальные
+        // Шаг 3: Фильтруем запрошенные атрибуты, исключая локальные
+        Set<String> filteredAttributes = normalizedAttributes.stream()
+                .filter(attr -> !localAttributeNames.contains(attr.toLowerCase()))
+                .collect(Collectors.toSet());
+        logger.debug("Filtered requested attributes (excluding local attributes): {}", filteredAttributes);
+
+        // Шаг 4: Добавляем зависимые атрибуты для запрошенных локальных атрибутов
+        for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
+            boolean isRequested = normalizedAttributes.stream()
+                    .anyMatch(reqAttr -> reqAttr.equalsIgnoreCase(attr.getName()));
+            if (isRequested && attr.getResultExpression() != null) {
+                Set<String> attrNames = extractAttributeNames(attr.getResultExpression());
+                for (String depAttr : attrNames) {
+                    if (!depAttr.equals("*") && !filteredAttributes.contains(depAttr)) {
+                        dependentAttributes.add(depAttr);
+                        logger.debug("Added dependent attribute for local computation: {}", depAttr);
+                    }
+                }
+            }
+        }
+
+        // Шаг 5: Формируем итоговый список
+        attributesToRequest.addAll(filteredAttributes);
+        attributesToRequest.addAll(dependentAttributes);
+        if (attributesToRequest.isEmpty()) {
+            attributesToRequest.add("objectClass");
+            logger.debug("No attributes to request after filtering, added default: objectClass");
+        }
+
+        logger.debug("Final attributes to request from server: {}", attributesToRequest);
+        return attributesToRequest;
+    }
+
+
+
+    public List<String> enhanceRequestedAttributes01(List<String> requestedAttributes) {
+        List<ConfigProperties.TargetConfig.LocalAttribute> localAttributes = configProperties.getTargetConfig().getLocalAttributes();
+        Set<String> localAttributeNames = localAttributes.stream()
+                .map(ConfigProperties.TargetConfig.LocalAttribute::getName)
+                .map(String::toLowerCase)
+                .collect(Collectors.toSet());
+
+        List<String> attributesToRequest = new ArrayList<>();
+
+        // Шаг 1: Собираем все зависимые атрибуты, необходимые для локальных вычислений
+        Set<String> dependentAttributes = new HashSet<>();
+        for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
+            if (attr.getResultExpression() != null) {
+                Set<String> attrNames = extractAttributeNames(attr.getResultExpression());
+                for (String depAttr : attrNames) {
+                    if (!depAttr.equals("*")) {
+                        dependentAttributes.add(depAttr);
+                        logger.debug("Added dependent attribute for local computation: {}", depAttr);
+                    }
+                }
+            }
+        }
+
+        // Шаг 2: Проверяем, есть ли "*" или пустой список
+        if (requestedAttributes == null || requestedAttributes.isEmpty() || requestedAttributes.contains("*")) {
+            attributesToRequest.add("*");
+            // Добавляем зависимые атрибуты, чтобы гарантировать их наличие
+            attributesToRequest.addAll(dependentAttributes);
+            logger.debug("Client requested '*' or no attributes, requesting all server attributes plus dependent attributes: {}", attributesToRequest);
+            return attributesToRequest;
+        }
+
+        // Шаг 3: Фильтруем запрошенные атрибуты, исключая локальные
         Set<String> filteredAttributes = requestedAttributes.stream()
                 .filter(attr -> !localAttributeNames.contains(attr.toLowerCase()))
                 .collect(Collectors.toSet());
         logger.debug("Filtered requested attributes (excluding local attributes): {}", filteredAttributes);
 
-        // Шаг 3: Добавляем зависимые атрибуты для локальных вычислений
-        Set<String> dependentAttributes = new HashSet<>();
+        // Шаг 4: Добавляем зависимые атрибуты для запрошенных локальных атрибутов
         for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
             boolean isRequested = requestedAttributes.stream()
                     .anyMatch(reqAttr -> reqAttr.equalsIgnoreCase(attr.getName()));
@@ -794,7 +903,7 @@ public class LdapMITM {
             }
         }
 
-        // Шаг 4: Формируем итоговый список
+        // Шаг 5: Формируем итоговый список
         attributesToRequest.addAll(filteredAttributes);
         attributesToRequest.addAll(dependentAttributes);
         if (attributesToRequest.isEmpty()) {
@@ -828,10 +937,6 @@ public class LdapMITM {
             for (String attrName : attrNames) {
                 Attribute attr = entry.getAttribute(attrName);
                 String value = (attr != null && attr.getValues().length > 0) ? attr.getValues()[0] : null;
-                if (value == null && filterValue != null && filterValue.contains("@")) {
-                    value = filterValue.substring(0, filterValue.indexOf("@"));
-                    logger.debug("Using fallback value for {}: {}", attrName, value);
-                }
                 if (value == null) {
                     logger.warn("No value found for dependent attribute {}, skipping expression {}", attrName, resultExpression);
                     return null;
@@ -862,6 +967,23 @@ public class LdapMITM {
     }
 
     private Filter transformFilter(Filter filter, Map<String, ConfigProperties.TargetConfig.LocalAttribute> attributeMap) {
+        if (filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
+            String attributeName = filter.getAttributeName().toLowerCase();
+            logger.debug("Processing PRESENCE filter for attribute '{}'", attributeName);
+            ConfigProperties.TargetConfig.LocalAttribute localAttribute = attributeMap.get(attributeName);
+            if (localAttribute != null) {
+                logger.debug("Found matching local attribute: {}", localAttribute);
+                String searchExpression = localAttribute.getSearchExpression();
+                if (searchExpression != null) {
+                    // Извлекаем целевой атрибут из searchExpression (например, {{sAMAccountName}})
+                    String targetAttribute = extractAttributeName(searchExpression);
+                    logger.debug("Replacing local attribute '{}' presence filter with '{}=*'", attributeName, targetAttribute);
+                    return Filter.createPresenceFilter(targetAttribute);
+                }
+            }
+            logger.debug("No matching local attribute found for '{}', keeping original filter", attributeName);
+            return filter;
+        } else
         if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
             String attributeName = filter.getAttributeName().toLowerCase();
             logger.debug("Processing EQUALITY filter for attribute '{}'", attributeName);

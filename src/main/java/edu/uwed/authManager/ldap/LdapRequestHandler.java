@@ -165,11 +165,11 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
                                 LdapMITM.FilterResult filterResult = ldapMITM.generateLdapFilter(originalFilter, searchBaseDN);
                                 Filter enhancedFilter = filterResult.getFilter();
                                 List<Map.Entry<String, String>> filterValues = filterResult.getFilterValues();
-                                List<LdapMITM.LocalFilterCondition> localFilterConditions = filterResult.getLocalFilterConditions();
+                                List<LdapMITM.LocalDnFilterCondition> localDnFilterConditions = filterResult.getLocalDnFilterConditions();
 
                                 LdapProxyStreamingSearchResultListener listener = new LdapProxyStreamingSearchResultListener(
                                         ctx,
-                                        ldapMITM.getFilter(localFilterConditions),
+                                        ldapMITM.getFilter(localDnFilterConditions),
                                         ldapMITM.getEntryProcessor(requestedAttributes, filterValues),
                                         clientMessageId,
                                         pool, conn

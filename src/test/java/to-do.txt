@@ -1,0 +1,12 @@
+Привет.
+Продолжим прежнюю беседу исчерпавшую лимит, исходники-  в аттачах.
+Не спеши сразу много кодить,сперва разберемся и обсудим.
+Эта задача - LDAP прокси.
+
+Все работает, но с неточнстями в логике обработки этой ветки настроек локальной фильтрации:
+
+local.ldap.target.local-dn-filters[0].attribute=dn
+local.ldap.target.local-dn-filters[0].auto-base-dn=true
+
+local.ldap.target.local-dn-filters[1].attribute=distinguishedName
+local.ldap.target.local-dn-filters[1].auto-base-dn=true

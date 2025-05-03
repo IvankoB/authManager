@@ -227,9 +227,9 @@ public class LdapMITM {
             this.invalid = invalid;
         }
 
-//        public boolean isInvalid() {
-//            return invalid;
-//        }
+        public boolean isInvalid() {
+            return invalid;
+        }
 
         public LocalDnFilterCondition(DN_FILTER_TYPE type, String attribute, List<String> values, boolean autoBaseDn) {
             this(type, attribute, values, autoBaseDn, false);
@@ -280,7 +280,6 @@ public class LdapMITM {
         this.configProperties = configProperties;
     }
 
-    // Валидация DN-фильтра
     private Set<DnFilterValidationResult> isValidDnFilter(String value, boolean autoBaseDn) {
         Set<DnFilterValidationResult> results = new HashSet<>();
 
@@ -313,7 +312,8 @@ public class LdapMITM {
             String key = parts[0].trim();
             String val = parts[1].trim();
 
-            if (!key.matches("cn|ou|dc")) {
+            // Строгая проверка ключей
+            if (!key.equals("cn") && !key.equals("ou") && !key.equals("dc")) {
                 logger.debug("DN filter validation failed: invalid key '{}'", key);
                 results.add(DnFilterValidationResult.INVALID_KEY);
             }
@@ -339,8 +339,6 @@ public class LdapMITM {
         return results;
     }
 
-
-    // Проверка DN на точное соответствие фильтру
     private Set<DnFilterCheckResult> checkDnFilter(String dn, String filterValue, boolean autoBaseDn, String baseDN) {
         Set<DnFilterCheckResult> results = new HashSet<>();
 
@@ -350,182 +348,173 @@ public class LdapMITM {
             return results;
         }
 
-        // Добавляем baseDN, если требуется
         String fullFilterValue = autoBaseDn && !filterValue.toLowerCase().contains("dc=") ? appendBaseDNIfMissing(filterValue, baseDN) : filterValue;
         String[] filterComponents = fullFilterValue.toLowerCase().split(",");
         String[] dnComponents = dn.toLowerCase().split(",");
 
-        // Проверяем только начало DN
-        boolean matched = true;
-        for (int i = 0; i < filterComponents.length; i++) {
-            int dnIndex = i;
-            if (dnIndex >= dnComponents.length) {
-                matched = false;
-                break;
-            }
-
-            String filterComponent = filterComponents[i];
-            String dnComponent = dnComponents[dnIndex];
-
-            if (!filterComponent.contains("=") || !dnComponent.contains("=")) {
-                logger.debug("DN filter check failed: invalid component format: filterComponent={}, dnComponent={}",
-                        filterComponent, dnComponent);
+        // Проверяем, что все компоненты фильтра присутствуют в DN в правильном порядке
+        int dnIndex = 0;
+        for (String filterComponent : filterComponents) {
+            if (!filterComponent.contains("=")) {
+                logger.debug("DN filter check failed: invalid component format: filterComponent={}", filterComponent);
                 results.add(DnFilterCheckResult.INVALID_COMPONENT_FORMAT);
-                matched = false;
-                break;
+                return results;
             }
 
             String[] filterParts = filterComponent.split("=", 2);
-            String[] dnParts = dnComponent.split("=", 2);
-            if (filterParts.length != 2 || dnParts.length != 2) {
-                logger.debug("DN filter check failed: invalid component structure: filterComponent={}, dnComponent={}",
-                        filterComponent, dnComponent);
+            if (filterParts.length != 2) {
+                logger.debug("DN filter check failed: invalid component structure: filterComponent={}", filterComponent);
                 results.add(DnFilterCheckResult.INVALID_COMPONENT_FORMAT);
-                matched = false;
-                break;
+                return results;
             }
-
             String filterKey = filterParts[0].trim();
             String filterValuePart = filterParts[1].trim();
-            String dnKey = dnParts[0].trim();
-            String dnValue = dnParts[1].trim();
 
-            logger.debug("Comparing components: filterKey={}, filterValue={}, dnKey={}, dnValue={}",
-                    filterKey, filterValuePart, dnKey, dnValue);
-
-            if (!filterKey.equals(dnKey)) {
-                matched = false;
-                break;
-            }
-
-            if (filterValuePart.equals("*")) {
-                continue;
-            } else if (filterValuePart.contains("*")) {
-                String pattern = filterValuePart.replace("*", ".*");
-                if (!dnValue.matches(pattern)) {
-                    logger.debug("DN filter check failed: value mismatch: dnValue={} does not match pattern={} in filter {}",
-                            dnValue, pattern, filterComponent);
-                    results.add(DnFilterCheckResult.VALUE_MISMATCH);
-                    matched = false;
-                    break;
-                }
-            } else if (!filterValuePart.equals(dnValue)) {
-                logger.debug("DN filter check failed: value mismatch: filterValue={} != dnValue={} in components {} and {}",
-                        filterValuePart, dnValue, filterComponent, dnComponent);
-                results.add(DnFilterCheckResult.VALUE_MISMATCH);
-                matched = false;
-                break;
-            }
-        }
-
-        if (matched) {
-            logger.debug("DN {} matches filter {} at startIndex 0", dn, fullFilterValue);
-            results.add(DnFilterCheckResult.MATCH);
-            return results;
-        }
-
-        logger.debug("DN {} does not match filter {} at startIndex 0", dn, fullFilterValue);
-        results.add(DnFilterCheckResult.VALUE_MISMATCH);
-        return results;
-    }
-
-    private Set<DnFilterCheckResult> checkDnFilterRelaxed(String dn, String filterValue, boolean autoBaseDn, String baseDN) {
-        Set<DnFilterCheckResult> results = new HashSet<>();
-
-        if (dn == null || filterValue == null || baseDN == null) {
-            logger.debug("DN filter check failed: invalid input: dn={}, filterValue={}, baseDN={}", dn, filterValue, baseDN);
-            results.add(DnFilterCheckResult.INVALID_INPUT);
-            return results;
-        }
-
-        // Добавляем baseDN, если требуется
-        String fullFilterValue = autoBaseDn && !filterValue.toLowerCase().contains("dc=") ? appendBaseDNIfMissing(filterValue, baseDN) : filterValue;
-        String[] filterComponents = fullFilterValue.toLowerCase().split(",");
-        String[] dnComponents = dn.toLowerCase().split(",");
-
-        // Проверяем, что компоненты фильтра образуют непрерывную последовательность в DN
-        for (int startIndex = 0; startIndex <= dnComponents.length - filterComponents.length; startIndex++) {
-            boolean matched = true;
-            for (int i = 0; i < filterComponents.length; i++) {
-                int dnIndex = startIndex + i;
-                if (dnIndex >= dnComponents.length) {
-                    matched = false;
-                    break;
-                }
-
-                String filterComponent = filterComponents[i];
+            boolean matched = false;
+            while (dnIndex < dnComponents.length) {
                 String dnComponent = dnComponents[dnIndex];
-
-                if (!filterComponent.contains("=") || !dnComponent.contains("=")) {
-                    logger.debug("DN filter check failed: invalid component format: filterComponent={}, dnComponent={}",
-                            filterComponent, dnComponent);
+                if (!dnComponent.contains("=")) {
+                    logger.debug("DN filter check failed: invalid DN component format: dnComponent={}", dnComponent);
                     results.add(DnFilterCheckResult.INVALID_COMPONENT_FORMAT);
-                    matched = false;
-                    break;
+                    return results;
                 }
 
-                String[] filterParts = filterComponent.split("=", 2);
                 String[] dnParts = dnComponent.split("=", 2);
-                if (filterParts.length != 2 || dnParts.length != 2) {
-                    logger.debug("DN filter check failed: invalid component structure: filterComponent={}, dnComponent={}",
-                            filterComponent, dnComponent);
+                if (dnParts.length != 2) {
+                    logger.debug("DN filter check failed: invalid DN component structure: dnComponent={}", dnComponent);
                     results.add(DnFilterCheckResult.INVALID_COMPONENT_FORMAT);
-                    matched = false;
-                    break;
+                    return results;
                 }
-
-                String filterKey = filterParts[0].trim();
-                String filterValuePart = filterParts[1].trim();
                 String dnKey = dnParts[0].trim();
                 String dnValue = dnParts[1].trim();
 
-                logger.debug("Comparing components: filterKey={}, filterValue={}, dnKey={}, dnValue={}",
-                        filterKey, filterValuePart, dnKey, dnValue);
-
-                if (!filterKey.equals(dnKey)) {
-                    matched = false;
-                    break;
-                }
-
-                if (filterValuePart.equals("*")) {
-                    continue;
-                } else if (filterValuePart.contains("*")) {
-                    String pattern = filterValuePart.replace("*", ".*");
-                    if (!dnValue.matches(pattern)) {
-                        logger.debug("DN filter check failed: value mismatch: dnValue={} does not match pattern={} in filter {}",
-                                dnValue, pattern, filterComponent);
-                        results.add(DnFilterCheckResult.VALUE_MISMATCH);
-                        matched = false;
+                if (filterKey.equals(dnKey)) {
+                    if (filterValuePart.equals("*") || filterValuePart.equals(dnValue)) {
+                        matched = true;
+                        dnIndex++;
                         break;
+                    } else if (filterValuePart.contains("*")) {
+                        String pattern = filterValuePart.replace("*", ".*");
+                        if (dnValue.matches(pattern)) {
+                            matched = true;
+                            dnIndex++;
+                            break;
+                        }
                     }
-                } else if (!filterValuePart.equals(dnValue)) {
-                    logger.debug("DN filter check failed: value mismatch: filterValue={} != dnValue={} in components {} and {}",
-                            filterValuePart, dnValue, filterComponent, dnComponent);
-                    results.add(DnFilterCheckResult.VALUE_MISMATCH);
-                    matched = false;
-                    break;
                 }
+                dnIndex++;
             }
 
-            if (matched) {
-                logger.debug("DN {} matches filter {} at startIndex {}", dn, fullFilterValue, startIndex);
-                results.add(DnFilterCheckResult.MATCH);
+            if (!matched) {
+                logger.debug("DN filter check failed: no match for filter component '{}'", filterComponent);
+                results.add(DnFilterCheckResult.VALUE_MISMATCH);
                 return results;
             }
         }
 
-        if (results.isEmpty()) {
-            logger.debug("DN {} does not match filter {}: no matching subsequence found", dn, fullFilterValue);
-            results.add(DnFilterCheckResult.VALUE_MISMATCH);
-        }
-
+        logger.debug("DN {} matches filter {}", dn, fullFilterValue);
+        results.add(DnFilterCheckResult.MATCH);
         return results;
     }
 
 
+//    private Set<DnFilterCheckResult> checkDnFilterRelaxed(String dn, String filterValue, boolean autoBaseDn, String baseDN) {
+//        Set<DnFilterCheckResult> results = new HashSet<>();
+//
+//        if (dn == null || filterValue == null || baseDN == null) {
+//            logger.debug("DN filter check failed: invalid input: dn={}, filterValue={}, baseDN={}", dn, filterValue, baseDN);
+//            results.add(DnFilterCheckResult.INVALID_INPUT);
+//            return results;
+//        }
+//
+//        // Добавляем baseDN, если требуется
+//        String fullFilterValue = autoBaseDn && !filterValue.toLowerCase().contains("dc=") ? appendBaseDNIfMissing(filterValue, baseDN) : filterValue;
+//        String[] filterComponents = fullFilterValue.toLowerCase().split(",");
+//        String[] dnComponents = dn.toLowerCase().split(",");
+//
+//        // Проверяем, что компоненты фильтра образуют непрерывную последовательность в DN
+//        for (int startIndex = 0; startIndex <= dnComponents.length - filterComponents.length; startIndex++) {
+//            boolean matched = true;
+//            for (int i = 0; i < filterComponents.length; i++) {
+//                int dnIndex = startIndex + i;
+//                if (dnIndex >= dnComponents.length) {
+//                    matched = false;
+//                    break;
+//                }
+//
+//                String filterComponent = filterComponents[i];
+//                String dnComponent = dnComponents[dnIndex];
+//
+//                if (!filterComponent.contains("=") || !dnComponent.contains("=")) {
+//                    logger.debug("DN filter check failed: invalid component format: filterComponent={}, dnComponent={}",
+//                            filterComponent, dnComponent);
+//                    results.add(DnFilterCheckResult.INVALID_COMPONENT_FORMAT);
+//                    matched = false;
+//                    break;
+//                }
+//
+//                String[] filterParts = filterComponent.split("=", 2);
+//                String[] dnParts = dnComponent.split("=", 2);
+//                if (filterParts.length != 2 || dnParts.length != 2) {
+//                    logger.debug("DN filter check failed: invalid component structure: filterComponent={}, dnComponent={}",
+//                            filterComponent, dnComponent);
+//                    results.add(DnFilterCheckResult.INVALID_COMPONENT_FORMAT);
+//                    matched = false;
+//                    break;
+//                }
+//
+//                String filterKey = filterParts[0].trim();
+//                String filterValuePart = filterParts[1].trim();
+//                String dnKey = dnParts[0].trim();
+//                String dnValue = dnParts[1].trim();
+//
+//                logger.debug("Comparing components: filterKey={}, filterValue={}, dnKey={}, dnValue={}",
+//                        filterKey, filterValuePart, dnKey, dnValue);
+//
+//                if (!filterKey.equals(dnKey)) {
+//                    matched = false;
+//                    break;
+//                }
+//
+//                if (filterValuePart.equals("*")) {
+//                    continue;
+//                } else if (filterValuePart.contains("*")) {
+//                    String pattern = filterValuePart.replace("*", ".*");
+//                    if (!dnValue.matches(pattern)) {
+//                        logger.debug("DN filter check failed: value mismatch: dnValue={} does not match pattern={} in filter {}",
+//                                dnValue, pattern, filterComponent);
+//                        results.add(DnFilterCheckResult.VALUE_MISMATCH);
+//                        matched = false;
+//                        break;
+//                    }
+//                } else if (!filterValuePart.equals(dnValue)) {
+//                    logger.debug("DN filter check failed: value mismatch: filterValue={} != dnValue={} in components {} and {}",
+//                            filterValuePart, dnValue, filterComponent, dnComponent);
+//                    results.add(DnFilterCheckResult.VALUE_MISMATCH);
+//                    matched = false;
+//                    break;
+//                }
+//            }
+//
+//            if (matched) {
+//                logger.debug("DN {} matches filter {} at startIndex {}", dn, fullFilterValue, startIndex);
+//                results.add(DnFilterCheckResult.MATCH);
+//                return results;
+//            }
+//        }
+//
+//        if (results.isEmpty()) {
+//            logger.debug("DN {} does not match filter {}: no matching subsequence found", dn, fullFilterValue);
+//            results.add(DnFilterCheckResult.VALUE_MISMATCH);
+//        }
+//
+//        return results;
+//    }
+
     private boolean isInvalidFilter(Filter filter) {
         if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
-            return "objectClass".equalsIgnoreCase(filter.getAttributeName()) && "invalid".equals(filter.getAssertionValue());
+            return "objectClass".equalsIgnoreCase(filter.getAttributeName()) &&
+                    ("invalid".equals(filter.getAssertionValue()) || "nonexistent".equals(filter.getAssertionValue()));
         } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
             for (Filter subFilter : filter.getComponents()) {
                 if (isInvalidFilter(subFilter)) {
@@ -536,187 +525,38 @@ public class LdapMITM {
         return false;
     }
 
-
-    // Метод для извлечения условий локальной фильтрации
-    private FilterExtractionResult extractLocalFilters(Filter filter, List<LocalDnFilterCondition> localDnFilterConditions, String searchBaseDN) {
-        List<ConfigProperties.TargetConfig.LocalDnFilter> localFilters = configProperties.getTargetConfig().getLocalDnFilters() != null ?
-                configProperties.getTargetConfig().getLocalDnFilters() : Collections.emptyList();
-        logger.debug("Local filters configured: {}", localFilters);
-
-        if (localFilters.isEmpty()) {
-            logger.debug("No local-dn-filters configured, returning original filter: {}", filter);
-            return new FilterExtractionResult(localDnFilterConditions, filter, false);
+    private FilterExtractionResult extractLocalFilters(
+            Filter filter,
+            List<LocalDnFilterCondition> conditions,
+            String searchBaseDN,
+            List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        if (dnNarrowings.isEmpty()) {
+            logger.debug("No DN narrowings configured, returning original filter");
+            return new FilterExtractionResult(conditions, filter, false);
         }
 
-        if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
-            List<Filter> remainingComponents = new ArrayList<>();
-            List<Filter> subComponents = new ArrayList<>(Arrays.asList(filter.getComponents()));
-            DN_FILTER_TYPE conditionType = filter.getFilterType() == Filter.FILTER_TYPE_AND ? DN_FILTER_TYPE.AND : DN_FILTER_TYPE.OR;
+        if (!isValidTopLevelFilter(filter, dnNarrowings)) {
+            logger.warn("Invalid top-level filter structure: {}", filter);
+            return new FilterExtractionResult(conditions, Filter.createEqualityFilter("objectClass", "nonexistent"), true);
+        }
 
-            if (filter.getFilterType() == Filter.FILTER_TYPE_OR) {
-                List<String> orValues = new ArrayList<>();
-                String matchedAttribute = null;
-                Boolean matchedAutoBaseDn = null;
-                boolean allLocalFilters = true;
-                List<Set<DnFilterValidationResult>> validationResultsList = new ArrayList<>();
-
-                for (Filter subFilter : subComponents) {
-                    if (subFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
-                        String attributeName = subFilter.getAttributeName();
-                        Optional<ConfigProperties.TargetConfig.LocalDnFilter> matchedConfig = localFilters.stream()
-                                .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
-                                .findFirst();
-                        if (matchedConfig.isPresent()) {
-                            String value = subFilter.getAssertionValue();
-                            boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
-                            Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
-                            validationResultsList.add(validationResults);
-                            if (!DnFilterValidationResult.isValidForEquality(validationResults)) {
-                                logger.warn("Invalid DN filter for attribute {}: {}, reasons: {}, adding invalid condition",
-                                        attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
-                                localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.EQUALITY, attributeName, Collections.emptyList(), autoBaseDn, true));
-                                return new FilterExtractionResult(localDnFilterConditions, Filter.createEqualityFilter("objectClass", "invalid"), true);
-                            }
-                            if (matchedAttribute == null) {
-                                matchedAttribute = attributeName;
-                                matchedAutoBaseDn = autoBaseDn;
-                            } else if (!matchedAttribute.equalsIgnoreCase(attributeName)) {
-                                allLocalFilters = false;
-                                remainingComponents.add(subFilter);
-                                continue;
-                            }
-                            if (matchedAutoBaseDn != null && matchedAutoBaseDn) {
-                                value = appendBaseDNIfMissing(value, searchBaseDN);
-                            }
-                            orValues.add(value);
-                        } else {
-                            allLocalFilters = false;
-                            remainingComponents.add(subFilter);
-                        }
-                    } else if (subFilter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
-                        String attributeName = subFilter.getAttributeName();
-                        Optional<ConfigProperties.TargetConfig.LocalDnFilter> matchedConfig = localFilters.stream()
-                                .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
-                                .findFirst();
-                        if (matchedConfig.isPresent()) {
-                            localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.ANY, attributeName, Collections.singletonList("*"), matchedConfig.get().isAutoBaseDn()));
-                            logger.debug("Extracted ANY local filter condition: filterType=DN, attribute={}", attributeName);
-                        } else {
-                            allLocalFilters = false;
-                            remainingComponents.add(subFilter);
-                        }
-                    } else {
-                        allLocalFilters = false;
-                        remainingComponents.add(subFilter);
-                    }
-                }
-
-                if (!orValues.isEmpty() && DnFilterValidationResult.isValidForOr(validationResultsList)) {
-                    localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.OR, matchedAttribute, orValues, matchedAutoBaseDn));
-                    logger.debug("Extracted OR local filter condition: filterType=DN, attribute={}, autoBaseDn={}, values={}",
-                            matchedAttribute, matchedAutoBaseDn, orValues);
-                    if (allLocalFilters) {
-                        return new FilterExtractionResult(localDnFilterConditions, null, false);
-                    }
-                } else if (!validationResultsList.isEmpty()) {
-                    logger.warn("OR filter contains invalid subfilters, reasons: {}, adding invalid condition",
-                            validationResultsList.stream()
-                                    .map(DnFilterValidationResult::getValidationIssues)
-                                    .collect(Collectors.joining("; ")));
-                    localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.OR, matchedAttribute, Collections.emptyList(), matchedAutoBaseDn != null && matchedAutoBaseDn, true));
-                    return new FilterExtractionResult(localDnFilterConditions, Filter.createEqualityFilter("objectClass", "invalid"), true);
-                }
-            } else {
-                for (Filter subFilter : subComponents) {
-                    FilterExtractionResult subResult = extractLocalFilters(subFilter, localDnFilterConditions, searchBaseDN);
-                    if (subResult.isRejectedDueToInvalidFilter()) {
-                        localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.AND, null, Collections.emptyList(), false, true));
-                        return new FilterExtractionResult(localDnFilterConditions, Filter.createEqualityFilter("objectClass", "invalid"), true);
-                    }
-                    if (subResult.getRemainingFilter() != null) {
-                        remainingComponents.add(subResult.getRemainingFilter());
-                    }
-                }
-                if (!localDnFilterConditions.isEmpty() && conditionType.isLogicalOperator()) {
-                    localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.AND, null, Collections.emptyList(), false));
-                    logger.debug("Extracted AND local filter condition: filterType=DN");
-                }
-            }
-
-            if (remainingComponents.isEmpty()) {
-                return new FilterExtractionResult(localDnFilterConditions, null, false);
-            }
-
-            if (filter.getFilterType() == Filter.FILTER_TYPE_AND) {
-                return new FilterExtractionResult(localDnFilterConditions, Filter.createANDFilter(remainingComponents), false);
-            } else {
-                return new FilterExtractionResult(localDnFilterConditions, Filter.createORFilter(remainingComponents), false);
-            }
+        if (filter.getFilterType() == Filter.FILTER_TYPE_AND) {
+            return processTopLevelAndFilter(filter, conditions, searchBaseDN, dnNarrowings);
+        } else if (filter.getFilterType() == Filter.FILTER_TYPE_OR) {
+            return processTopLevelOrFilter(filter, conditions, searchBaseDN, dnNarrowings);
         } else if (filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
-            Filter notSubFilter = filter.getNOTComponent();
-            if (notSubFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
-                String attributeName = notSubFilter.getAttributeName();
-                Optional<ConfigProperties.TargetConfig.LocalDnFilter> matchedConfig = localFilters.stream()
-                        .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
-                        .findFirst();
-                if (matchedConfig.isPresent()) {
-                    String value = notSubFilter.getAssertionValue();
-                    boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
-                    Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
-                    if (!DnFilterValidationResult.isValidForNot(validationResults)) {
-                        logger.warn("Invalid DN filter in NOT for attribute {}: {}, reasons: {}, adding invalid condition",
-                                attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
-                        localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.NOT, attributeName, Collections.emptyList(), autoBaseDn, true));
-                        return new FilterExtractionResult(localDnFilterConditions, Filter.createEqualityFilter("objectClass", "invalid"), true);
-                    }
-                    if (autoBaseDn) {
-                        value = appendBaseDNIfMissing(value, searchBaseDN);
-                    }
-                    localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.NOT, attributeName, Collections.singletonList(value), autoBaseDn));
-                    logger.debug("Extracted NOT local filter condition: filterType=DN, attribute={}, value={}", attributeName, value);
-                    return new FilterExtractionResult(localDnFilterConditions, null, false);
-                }
-            }
-            return new FilterExtractionResult(localDnFilterConditions, filter, false);
+            return processNotFilter(filter, conditions, searchBaseDN, dnNarrowings);
         } else if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
-            String attributeName = filter.getAttributeName();
-            Optional<ConfigProperties.TargetConfig.LocalDnFilter> matchedConfig = localFilters.stream()
-                    .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
-                    .findFirst();
-            if (matchedConfig.isPresent()) {
-                String value = filter.getAssertionValue();
-                boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
-                Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
-                if (!DnFilterValidationResult.isValidForEquality(validationResults)) {
-                    logger.warn("Invalid DN filter for attribute {}: {}, reasons: {}, adding invalid condition",
-                            attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
-                    localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.EQUALITY, attributeName, Collections.emptyList(), autoBaseDn, true));
-                    return new FilterExtractionResult(localDnFilterConditions, Filter.createEqualityFilter("objectClass", "invalid"), true);
-                }
-                if (autoBaseDn) {
-                    value = appendBaseDNIfMissing(value, searchBaseDN);
-                }
-                localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.EQUALITY, attributeName, Collections.singletonList(value), autoBaseDn));
-                logger.debug("Extracted EQUALITY local filter condition: filterType=DN, attribute={}, value={}", attributeName, value);
-                return new FilterExtractionResult(localDnFilterConditions, null, false);
-            }
+            return processEqualityFilter(filter, conditions, searchBaseDN, dnNarrowings);
         } else if (filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
-            String attributeName = filter.getAttributeName();
-            Optional<ConfigProperties.TargetConfig.LocalDnFilter> matchedConfig = localFilters.stream()
-                    .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
-                    .findFirst();
-            if (matchedConfig.isPresent()) {
-                localDnFilterConditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.ANY, attributeName, Collections.singletonList("*"), matchedConfig.get().isAutoBaseDn()));
-                logger.debug("Extracted ANY local filter condition: filterType=DN, attribute={}", attributeName);
-                return new FilterExtractionResult(localDnFilterConditions, null, false);
-            }
+            return processPresenceFilter(filter, conditions, searchBaseDN, dnNarrowings);
         }
 
-        return new FilterExtractionResult(localDnFilterConditions, filter, false);
+        logger.debug("extractLocalFilters: returning filter={}, conditions={}", filter, conditions);
+        return new FilterExtractionResult(conditions, filter, false);
     }
 
-
-
+    // [MODIFIED] Добавление baseDN, если требуется
     private String appendBaseDNIfMissing(String value, String searchBaseDN) {
         String baseDN = searchBaseDN != null && !searchBaseDN.isEmpty() ? searchBaseDN : configProperties.getTargetConfig().getDefaultBase();
         if (baseDN == null || baseDN.isEmpty()) {
@@ -729,86 +569,86 @@ public class LdapMITM {
         return value;
     }
 
-    // Новый метод для рекурсивной обработки фильтров
-    private Filter transformPresenceFilters(Filter filter, List<ConfigProperties.TargetConfig.LocalAttribute> attributes) {
-        // Если фильтр — это PRESENCE
-        if (filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
-            String attributeName = filter.getAttributeName();
-            ConfigProperties.TargetConfig.LocalAttribute matchingAttr = attributes.stream()
-                    .filter(attr -> attr.getName().equalsIgnoreCase(attributeName))
-                    .findFirst()
-                    .orElse(null);
+//    // Новый метод для рекурсивной обработки фильтров
+//    private Filter transformPresenceFilters(Filter filter, List<ConfigProperties.TargetConfig.LocalAttribute> attributes) {
+//        // Если фильтр — это PRESENCE
+//        if (filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
+//            String attributeName = filter.getAttributeName();
+//            ConfigProperties.TargetConfig.LocalAttribute matchingAttr = attributes.stream()
+//                    .filter(attr -> attr.getName().equalsIgnoreCase(attributeName))
+//                    .findFirst()
+//                    .orElse(null);
+//
+//            if (matchingAttr != null && matchingAttr.getSearchExpression() != null) {
+//                String targetAttribute = extractAttributeName(matchingAttr.getSearchExpression());
+//                // Преобразуем (postalAddress=*) в (sAMAccountName=*)
+//                String transformedFilter = "(" + targetAttribute + "=*)";
+//                try {
+//                    Filter finalFilter = Filter.create(transformedFilter);
+//                    logger.debug("Transformed wildcard filter: {} -> {}", filter, finalFilter);
+//                    return finalFilter;
+//                } catch (LDAPException e) {
+//                    logger.error("Failed to parse transformed wildcard filter: {}", transformedFilter, e);
+//                    return Filter.createEqualityFilter("objectClass", "invalid");
+//                }
+//            }
+//            return filter;
+//        }
+//        // Если фильтр составной (AND или OR), рекурсивно обрабатываем подфильтры
+//        else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
+//            List<Filter> modifiedComponents = new ArrayList<>();
+//            for (Filter subFilter : filter.getComponents()) {
+//                Filter transformedSubFilter = transformPresenceFilters(subFilter, attributes);
+//                modifiedComponents.add(transformedSubFilter);
+//            }
+//            if (filter.getFilterType() == Filter.FILTER_TYPE_AND) {
+//                return Filter.createANDFilter(modifiedComponents);
+//            } else {
+//                return Filter.createORFilter(modifiedComponents);
+//            }
+//        }
+//        // Для остальных типов фильтров вызываем существующую логику
+//        return replaceLocalAttributes(filter, attributes);
+//    }
 
-            if (matchingAttr != null && matchingAttr.getSearchExpression() != null) {
-                String targetAttribute = extractAttributeName(matchingAttr.getSearchExpression());
-                // Преобразуем (postalAddress=*) в (sAMAccountName=*)
-                String transformedFilter = "(" + targetAttribute + "=*)";
-                try {
-                    Filter finalFilter = Filter.create(transformedFilter);
-                    logger.debug("Transformed wildcard filter: {} -> {}", filter, finalFilter);
-                    return finalFilter;
-                } catch (LDAPException e) {
-                    logger.error("Failed to parse transformed wildcard filter: {}", transformedFilter, e);
-                    return Filter.createEqualityFilter("objectClass", "invalid");
-                }
-            }
-            return filter;
-        }
-        // Если фильтр составной (AND или OR), рекурсивно обрабатываем подфильтры
-        else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
-            List<Filter> modifiedComponents = new ArrayList<>();
-            for (Filter subFilter : filter.getComponents()) {
-                Filter transformedSubFilter = transformPresenceFilters(subFilter, attributes);
-                modifiedComponents.add(transformedSubFilter);
-            }
-            if (filter.getFilterType() == Filter.FILTER_TYPE_AND) {
-                return Filter.createANDFilter(modifiedComponents);
-            } else {
-                return Filter.createORFilter(modifiedComponents);
-            }
-        }
-        // Для остальных типов фильтров вызываем существующую логику
-        return replaceLocalAttributes(filter, attributes);
-    }
 
-
-    private Filter replaceLocalAttributes(Filter filter, List<ConfigProperties.TargetConfig.LocalAttribute> attributes) {
-        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
-            String attributeName = filter.getAttributeName();
-            ConfigProperties.TargetConfig.LocalAttribute matchingAttr = attributes.stream()
-                    .filter(attr -> attr.getName().equalsIgnoreCase(attributeName))
-                    .findFirst()
-                    .orElse(null);
-
-            if (matchingAttr != null && matchingAttr.getSearchExpression() != null) {
-                String username = extractUsernameFromValue(filter.getAssertionValue());
-                if (username != null && !username.isEmpty()) {
-                    String targetAttribute = extractAttributeName(matchingAttr.getSearchExpression());
-                    String targetValue = formatServerFilterValue(matchingAttr.getSearchExpression(), username);
-                    logger.debug("Replacing local attribute '{}' with server filter for '{}={}'", attributeName, targetAttribute, targetValue);
-                    return Filter.createEqualityFilter(targetAttribute, targetValue);
-                } else {
-                    logger.debug("No valid username found in client filter for '{}', using presence filter for 'mail'", attributeName);
-                    return Filter.createPresenceFilter("mail");
-                }
-            }
-            return filter;
-        } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
-            List<Filter> modifiedFilters = new ArrayList<>();
-            for (Filter subFilter : filter.getComponents()) {
-                Filter modifiedSubFilter = replaceLocalAttributes(subFilter, attributes);
-                modifiedFilters.add(modifiedSubFilter);
-            }
-            return filter.getFilterType() == Filter.FILTER_TYPE_AND
-                    ? Filter.createANDFilter(modifiedFilters)
-                    : Filter.createORFilter(modifiedFilters);
-        } else if (filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
-            Filter subFilter = filter.getNOTComponent();
-            Filter modifiedSubFilter = replaceLocalAttributes(subFilter, attributes);
-            return Filter.createNOTFilter(modifiedSubFilter);
-        }
-        return filter;
-    }
+//    private Filter replaceLocalAttributes(Filter filter, List<ConfigProperties.TargetConfig.LocalAttribute> attributes) {
+//        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+//            String attributeName = filter.getAttributeName();
+//            ConfigProperties.TargetConfig.LocalAttribute matchingAttr = attributes.stream()
+//                    .filter(attr -> attr.getName().equalsIgnoreCase(attributeName))
+//                    .findFirst()
+//                    .orElse(null);
+//
+//            if (matchingAttr != null && matchingAttr.getSearchExpression() != null) {
+//                String username = extractUsernameFromValue(filter.getAssertionValue());
+//                if (username != null && !username.isEmpty()) {
+//                    String targetAttribute = extractAttributeName(matchingAttr.getSearchExpression());
+//                    String targetValue = formatServerFilterValue(matchingAttr.getSearchExpression(), username);
+//                    logger.debug("Replacing local attribute '{}' with server filter for '{}={}'", attributeName, targetAttribute, targetValue);
+//                    return Filter.createEqualityFilter(targetAttribute, targetValue);
+//                } else {
+//                    logger.debug("No valid username found in client filter for '{}', using presence filter for 'mail'", attributeName);
+//                    return Filter.createPresenceFilter("mail");
+//                }
+//            }
+//            return filter;
+//        } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
+//            List<Filter> modifiedFilters = new ArrayList<>();
+//            for (Filter subFilter : filter.getComponents()) {
+//                Filter modifiedSubFilter = replaceLocalAttributes(subFilter, attributes);
+//                modifiedFilters.add(modifiedSubFilter);
+//            }
+//            return filter.getFilterType() == Filter.FILTER_TYPE_AND
+//                    ? Filter.createANDFilter(modifiedFilters)
+//                    : Filter.createORFilter(modifiedFilters);
+//        } else if (filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+//            Filter subFilter = filter.getNOTComponent();
+//            Filter modifiedSubFilter = replaceLocalAttributes(subFilter, attributes);
+//            return Filter.createNOTFilter(modifiedSubFilter);
+//        }
+//        return filter;
+//    }
 
     private Filter checkDomainInFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalAttribute> localAttributes) {
         if (filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
@@ -835,11 +675,11 @@ public class LdapMITM {
                     List<String> localDomains = configProperties.getTargetConfig().getLocalDomains();
                     if (localDomains != null && !localDomains.contains(domain)) {
                         logger.debug("Domain '{}' not in local domains: {}, rejecting filter", domain, localDomains);
-                        return Filter.createEqualityFilter("objectClass", "invalid");
+                        return Filter.createEqualityFilter("objectClass", "nonexistent");
                     }
                     return null; // Домен валиден
                 }
-                return Filter.createEqualityFilter("objectClass", "invalid"); // Нет домена в значении
+                return Filter.createEqualityFilter("objectClass", "nonexistent"); // Нет домена в значении
             }
             return null; // Атрибут не требует проверки домена
         } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
@@ -852,7 +692,7 @@ public class LdapMITM {
                 Filter modifiedSubFilter = checkDomainInFilter(subFilter, localAttributes);
                 if (modifiedSubFilter != null) {
                     boolean isInvalid = modifiedSubFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY
-                            && "invalid".equals(modifiedSubFilter.getAssertionValue());
+                            && "nonexistent".equals(modifiedSubFilter.getAssertionValue());
                     if (filter.getFilterType() == Filter.FILTER_TYPE_OR && isInvalid) {
                         continue;
                     }
@@ -882,12 +722,12 @@ public class LdapMITM {
 
             if (modifiedComponents.isEmpty()) {
                 logger.debug("All subfilters in OR are invalid, rejecting entire filter");
-                return Filter.createEqualityFilter("objectClass", "invalid");
+                return Filter.createEqualityFilter("objectClass", "nonexistent");
             }
 
             if (allInvalid) {
                 logger.debug("All remaining subfilters are invalid, rejecting entire filter");
-                return Filter.createEqualityFilter("objectClass", "invalid");
+                return Filter.createEqualityFilter("objectClass", "nonexistent");
             }
 
             Filter newFilter = filter.getFilterType() == Filter.FILTER_TYPE_AND
@@ -907,7 +747,7 @@ public class LdapMITM {
 
             if (modifiedSubFilter != null) {
                 boolean isInvalid = modifiedSubFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY
-                        && "invalid".equals(modifiedSubFilter.getAssertionValue());
+                        && "nonexistent".equals(modifiedSubFilter.getAssertionValue());
                 if (isInvalid) {
                     logger.debug("Subfilter in NOT is invalid, converting NOT to a valid filter");
                     return Filter.createPresenceFilter("objectClass");
@@ -1051,12 +891,13 @@ public class LdapMITM {
 
     public Predicate<SearchResultEntry> getFilter(FilterExtractionResult extractionResult) {
         return entry -> {
+            if (extractionResult.isRejectedDueToInvalidFilter()) {
+                logger.debug("Filter rejected due to invalid structure, rejecting entry DN: {}", entry.getDN());
+                return false;
+            }
+
             List<LocalDnFilterCondition> localDnFilterConditions = extractionResult.getConditions();
             if (localDnFilterConditions == null || localDnFilterConditions.isEmpty()) {
-                if (extractionResult.isRejectedDueToInvalidFilter()) {
-                    logger.debug("No local filter conditions due to invalid filter, rejecting entry DN: {}", entry.getDN());
-                    return false;
-                }
                 logger.debug("No local filter conditions, passing entry DN: {}", entry.getDN());
                 return true;
             }
@@ -1067,102 +908,16 @@ public class LdapMITM {
             }
 
             String baseDN = configProperties.getTargetConfig().getDefaultBase();
-            if (baseDN == null || baseDN.isEmpty()) {
-                logger.warn("Default baseDN is not configured, skipping DN filtering for entry: {}", entry.getDN());
-                return false;
-            }
-
             boolean matches = true;
-
             for (LocalDnFilterCondition condition : localDnFilterConditions) {
-                boolean conditionMatch;
-                String attributeName = condition.getAttribute().toLowerCase();
-                List<String> targetValues = new ArrayList<>();
-
-                targetValues.add(entry.getDN().toLowerCase());
-                if (attributeName.equals("distinguishedname")) {
-                    Attribute attr = entry.getAttribute("distinguishedName");
-                    if (attr != null) {
-                        targetValues.addAll(Arrays.asList(attr.getValues()).stream()
-                                .map(String::toLowerCase)
-                                .collect(Collectors.toList()));
-                    } else {
-                        logger.debug("No distinguishedName attribute found, using DN: {}", entry.getDN());
-                    }
-                }
-
-                logger.debug("Processing condition: type={}, attribute={}, values={}, targetValues={}",
-                        condition.getType(), attributeName, condition.getValues(), targetValues);
-
-                if (condition.getValues().isEmpty()) {
-                    logger.warn("Empty values for condition type {}, attribute {}, rejecting condition",
-                            condition.getType(), condition.getAttribute());
-                    conditionMatch = false;
-                } else {
-                    switch (condition.getType()) {
-                        case EQUALITY -> {
-                            String value = condition.getValues().get(0).toLowerCase();
-                            List<Set<DnFilterCheckResult>> resultsList = targetValues.stream()
-                                    .map(target -> checkDnFilter(target, value, condition.isAutoBaseDn(), baseDN))
-                                    .collect(Collectors.toList());
-                            conditionMatch = resultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
-                            logger.debug("checkDnFilter for EQUALITY: value={}, results={}",
-                                    value, resultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
-                        }
-                        case ANY -> {
-                            conditionMatch = !targetValues.isEmpty();
-                            logger.debug("checkDnFilter for ANY: attribute={}, exists={}", attributeName, conditionMatch);
-                        }
-                        case OR -> {
-                            List<Set<DnFilterCheckResult>> resultsList = new ArrayList<>();
-                            for (String value : condition.getValues()) {
-                                String finalValue = value.toLowerCase();
-                                List<Set<DnFilterCheckResult>> subResults = targetValues.stream()
-                                        .map(target -> checkDnFilter(target, finalValue, condition.isAutoBaseDn(), baseDN))
-                                        .collect(Collectors.toList());
-                                resultsList.addAll(subResults);
-                            }
-                            conditionMatch = resultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
-                            logger.debug("checkDnFilter for OR: values={}, results={}",
-                                    condition.getValues(), resultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
-                        }
-                        case AND -> {
-                            List<Set<DnFilterCheckResult>> resultsList = new ArrayList<>();
-                            for (String value : condition.getValues()) {
-                                String finalValue = value.toLowerCase();
-                                List<Set<DnFilterCheckResult>> subResults = targetValues.stream()
-                                        .map(target -> checkDnFilter(target, finalValue, condition.isAutoBaseDn(), baseDN))
-                                        .collect(Collectors.toList());
-                                resultsList.addAll(subResults);
-                            }
-                            conditionMatch = resultsList.stream().allMatch(DnFilterCheckResult::isMatch);
-                            logger.debug("checkDnFilter for AND: values={}, results={}",
-                                    condition.getValues(), resultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
-                        }
-                        case NOT -> {
-                            String value = condition.getValues().get(0).toLowerCase();
-                            List<Set<DnFilterCheckResult>> resultsList = targetValues.stream()
-                                    .map(target -> checkDnFilter(target, value, condition.isAutoBaseDn(), baseDN))
-                                    .collect(Collectors.toList());
-                            conditionMatch = !resultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
-                            logger.debug("checkDnFilter for NOT: value={}, results={}",
-                                    value, resultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
-                        }
-                        default -> {
-                            logger.warn("Unsupported condition type: {}", condition.getType());
-                            conditionMatch = false;
-                        }
-                    }
-                }
-
+                boolean conditionMatch = evaluateCondition(condition, entry, baseDN);
                 if (condition.getType() == DN_FILTER_TYPE.OR) {
-                    matches |= conditionMatch; // OR: хотя бы одно условие должно совпасть
+                    matches |= conditionMatch;
                 } else {
-                    matches &= conditionMatch; // AND, EQUALITY, NOT: все условия должны совпасть
+                    matches &= conditionMatch;
                 }
-
                 if (!matches && condition.getType() == DN_FILTER_TYPE.AND) {
-                    break; // Ранний выход для AND
+                    break;
                 }
             }
 
@@ -1247,48 +1002,50 @@ public class LdapMITM {
     }
 
 
-    private String parseResultExpression(
-        SearchResultEntry entry,
-        String expression,
-        String filterValue,
-        ConfigProperties.TargetConfig.LocalAttribute localAttr
-    ) {
-        String newValue = expression;
-        Set<String> dependentAttrs = extractAttributesFromExpression(expression);
-        for (String depAttr : dependentAttrs) {
-            String placeholder = "{{" + depAttr + "}}";
-            String replacement = entry.getAttributeValue(depAttr);
-            if (replacement == null) {
-                if (filterValue != null && filterValue.contains("@")) {
-                    replacement = filterValue.substring(0, filterValue.indexOf("@"));
-                    logger.debug("Using fallback value for {}: {}", depAttr, replacement);
-                } else {
-                    logger.warn("No value found for dependent attribute {}, skipping expression {}", depAttr, expression);
-                    return null;
-                }
-            }
-            newValue = newValue.replace(placeholder, replacement);
-        }
+//    private String parseResultExpression(
+//        SearchResultEntry entry,
+//        String expression,
+//        String filterValue,
+//        ConfigProperties.TargetConfig.LocalAttribute localAttr
+//    ) {
+//        String newValue = expression;
+//        Set<String> dependentAttrs = extractAttributesFromExpression(expression);
+//        for (String depAttr : dependentAttrs) {
+//            String placeholder = "{{" + depAttr + "}}";
+//            String replacement = entry.getAttributeValue(depAttr);
+//            if (replacement == null) {
+//                if (filterValue != null && filterValue.contains("@")) {
+//                    replacement = filterValue.substring(0, filterValue.indexOf("@"));
+//                    logger.debug("Using fallback value for {}: {}", depAttr, replacement);
+//                } else {
+//                    logger.warn("No value found for dependent attribute {}, skipping expression {}", depAttr, expression);
+//                    return null;
+//                }
+//            }
+//            newValue = newValue.replace(placeholder, replacement);
+//        }
+//
+//        if (localAttr.isLocalDomainsOnly() && newValue.contains("@")) {
+//            String domain = newValue.substring(newValue.indexOf("@") + 1);
+//            ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
+//            String targetDomain = targetConfig.getDomain();
+//            List<String> localDomains = targetConfig.getLocalDomains() != null ? targetConfig.getLocalDomains() : Collections.emptyList();
+//
+//            boolean isDomainAllowed = domain.equalsIgnoreCase(targetDomain) ||
+//                    localDomains.stream().anyMatch(domain::equalsIgnoreCase);
+//            if (!isDomainAllowed) {
+//                logger.warn("Invalid domain in result for attribute {}: {}. Expected target domain: {}, local domains: {}",
+//                        localAttr.getName(), domain, targetDomain, localDomains);
+//                return null;
+//            }
+//        }
+//        return newValue;
+//    }
 
-        if (localAttr.isLocalDomainsOnly() && newValue.contains("@")) {
-            String domain = newValue.substring(newValue.indexOf("@") + 1);
-            ConfigProperties.TargetConfig targetConfig = configProperties.getTargetConfig();
-            String targetDomain = targetConfig.getDomain();
-            List<String> localDomains = targetConfig.getLocalDomains() != null ? targetConfig.getLocalDomains() : Collections.emptyList();
-
-            boolean isDomainAllowed = domain.equalsIgnoreCase(targetDomain) ||
-                    localDomains.stream().anyMatch(domain::equalsIgnoreCase);
-            if (!isDomainAllowed) {
-                logger.warn("Invalid domain in result for attribute {}: {}. Expected target domain: {}, local domains: {}",
-                        localAttr.getName(), domain, targetDomain, localDomains);
-                return null;
-            }
-        }
-        return newValue;
-    }
-
+    // [MODIFIED] Расширение запрошенных атрибутов
     public List<String> enhanceRequestedAttributes(List<String> requestedAttributes) {
         List<ConfigProperties.TargetConfig.LocalAttribute> localAttributes = configProperties.getTargetConfig().getLocalAttributes();
+        List<ConfigProperties.TargetConfig.LocalDnNarrowing> localDnNarrowings = configProperties.getTargetConfig().getLocalDnNarrowings();
         Set<String> localAttributeNames = localAttributes.stream()
                 .map(ConfigProperties.TargetConfig.LocalAttribute::getName)
                 .map(String::toLowerCase)
@@ -1296,25 +1053,15 @@ public class LdapMITM {
 
         List<String> attributesToRequest = new ArrayList<>();
 
-        // Нормализуем requestedAttributes
-        List<String> normalizedAttributes;
-        if (requestedAttributes == null) {
-            normalizedAttributes = Collections.singletonList("*");
-            logger.debug("requestedAttributes is null, assuming all attributes requested: {}", normalizedAttributes);
-        } else {
-            normalizedAttributes = new ArrayList<>(requestedAttributes);
-            // Проверяем, есть ли подозрительные элементы, которые могут быть именами файлов
-            boolean hasSuspiciousAttributes = normalizedAttributes.stream()
-                .anyMatch(
-                attr -> attr.contains(".") || attr.contains("/") || attr.contains("\\")
-                );
-            if (hasSuspiciousAttributes) {
-                logger.warn("Requested attributes contain elements that look like filenames: {}. This might be due to unescaped '*' in the command line.", normalizedAttributes);
-            }
-            logger.debug("Requested attributes: {}", normalizedAttributes);
-        }
+        // Добавляем DN-атрибуты из local-dn-narrowings (кроме "dn")
+        Set<String> dnAttributes = localDnNarrowings.stream()
+                .map(ConfigProperties.TargetConfig.LocalDnNarrowing::getAttribute)
+                .map(String::toLowerCase)
+                .filter(attr -> !attr.equals("dn"))
+                .collect(Collectors.toSet());
+        logger.debug("DN attributes to request: {}", dnAttributes);
 
-        // Шаг 1: Собираем все зависимые атрибуты, необходимые для локальных вычислений
+        // Собираем зависимые атрибуты для локальных вычислений
         Set<String> dependentAttributes = new HashSet<>();
         for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
             if (attr.getResultExpression() != null) {
@@ -1328,88 +1075,22 @@ public class LdapMITM {
             }
         }
 
-        // Шаг 2: Проверяем, есть ли "*" или пустой список
-        if (normalizedAttributes.isEmpty() || normalizedAttributes.contains("*")) {
-            attributesToRequest.add("*");
-            attributesToRequest.addAll(dependentAttributes);
-            logger.debug("Client requested '*' or no attributes, requesting all server attributes plus dependent attributes: {}", attributesToRequest);
-            return attributesToRequest;
-        }
-
-        // Шаг 3: Фильтруем запрошенные атрибуты, исключая локальные
-        Set<String> filteredAttributes = normalizedAttributes.stream()
-                .filter(attr -> !localAttributeNames.contains(attr.toLowerCase()))
-                .collect(Collectors.toSet());
-        logger.debug("Filtered requested attributes (excluding local attributes): {}", filteredAttributes);
-
-        // Шаг 4: Добавляем зависимые атрибуты для запрошенных локальных атрибутов
-        for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
-            boolean isRequested = normalizedAttributes.stream()
-                    .anyMatch(reqAttr -> reqAttr.equalsIgnoreCase(attr.getName()));
-            if (isRequested && attr.getResultExpression() != null) {
-                Set<String> attrNames = extractAttributeNames(attr.getResultExpression());
-                for (String depAttr : attrNames) {
-                    if (!depAttr.equals("*") && !filteredAttributes.contains(depAttr)) {
-                        dependentAttributes.add(depAttr);
-                        logger.debug("Added dependent attribute for local computation: {}", depAttr);
-                    }
-                }
-            }
-        }
-
-        // Шаг 5: Формируем итоговый список
-        attributesToRequest.addAll(filteredAttributes);
-        attributesToRequest.addAll(dependentAttributes);
-        if (attributesToRequest.isEmpty()) {
-            attributesToRequest.add("objectClass");
-            logger.debug("No attributes to request after filtering, added default: objectClass");
-        }
-
-        logger.debug("Final attributes to request from server: {}", attributesToRequest);
-        return attributesToRequest;
-    }
-
-
-
-    public List<String> enhanceRequestedAttributes01(List<String> requestedAttributes) {
-        List<ConfigProperties.TargetConfig.LocalAttribute> localAttributes = configProperties.getTargetConfig().getLocalAttributes();
-        Set<String> localAttributeNames = localAttributes.stream()
-                .map(ConfigProperties.TargetConfig.LocalAttribute::getName)
-                .map(String::toLowerCase)
-                .collect(Collectors.toSet());
-
-        List<String> attributesToRequest = new ArrayList<>();
-
-        // Шаг 1: Собираем все зависимые атрибуты, необходимые для локальных вычислений
-        Set<String> dependentAttributes = new HashSet<>();
-        for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
-            if (attr.getResultExpression() != null) {
-                Set<String> attrNames = extractAttributeNames(attr.getResultExpression());
-                for (String depAttr : attrNames) {
-                    if (!depAttr.equals("*")) {
-                        dependentAttributes.add(depAttr);
-                        logger.debug("Added dependent attribute for local computation: {}", depAttr);
-                    }
-                }
-            }
-        }
-
-        // Шаг 2: Проверяем, есть ли "*" или пустой список
+        // Проверяем, есть ли "*" или пустой список
         if (requestedAttributes == null || requestedAttributes.isEmpty() || requestedAttributes.contains("*")) {
             attributesToRequest.add("*");
-            // Добавляем зависимые атрибуты, чтобы гарантировать их наличие
             attributesToRequest.addAll(dependentAttributes);
+            attributesToRequest.addAll(dnAttributes);
             logger.debug("Client requested '*' or no attributes, requesting all server attributes plus dependent attributes: {}", attributesToRequest);
             return attributesToRequest;
         }
 
-        // Шаг 3: Фильтруем запрошенные атрибуты, исключая локальные
+        // Фильтруем запрошенные атрибуты, исключая локальные
         Set<String> filteredAttributes = requestedAttributes.stream()
                 .filter(attr -> !localAttributeNames.contains(attr.toLowerCase()))
                 .collect(Collectors.toSet());
         logger.debug("Filtered requested attributes (excluding local attributes): {}", filteredAttributes);
 
-        // Шаг 4: Добавляем зависимые атрибуты для запрошенных локальных атрибутов
+        // Добавляем зависимые атрибуты для запрошенных локальных атрибутов
         for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
             boolean isRequested = requestedAttributes.stream()
                     .anyMatch(reqAttr -> reqAttr.equalsIgnoreCase(attr.getName()));
@@ -1424,9 +1105,10 @@ public class LdapMITM {
             }
         }
 
-        // Шаг 5: Формируем итоговый список
+        // Формируем итоговый список
         attributesToRequest.addAll(filteredAttributes);
         attributesToRequest.addAll(dependentAttributes);
+        attributesToRequest.addAll(dnAttributes);
         if (attributesToRequest.isEmpty()) {
             attributesToRequest.add("objectClass");
             logger.debug("No attributes to request after filtering, added default: objectClass");
@@ -1435,6 +1117,72 @@ public class LdapMITM {
         logger.debug("Final attributes to request from server: {}", attributesToRequest);
         return attributesToRequest;
     }
+
+
+//    public List<String> enhanceRequestedAttributes01(List<String> requestedAttributes) {
+//        List<ConfigProperties.TargetConfig.LocalAttribute> localAttributes = configProperties.getTargetConfig().getLocalAttributes();
+//        Set<String> localAttributeNames = localAttributes.stream()
+//                .map(ConfigProperties.TargetConfig.LocalAttribute::getName)
+//                .map(String::toLowerCase)
+//                .collect(Collectors.toSet());
+//
+//        List<String> attributesToRequest = new ArrayList<>();
+//
+//        // Шаг 1: Собираем все зависимые атрибуты, необходимые для локальных вычислений
+//        Set<String> dependentAttributes = new HashSet<>();
+//        for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
+//            if (attr.getResultExpression() != null) {
+//                Set<String> attrNames = extractAttributeNames(attr.getResultExpression());
+//                for (String depAttr : attrNames) {
+//                    if (!depAttr.equals("*")) {
+//                        dependentAttributes.add(depAttr);
+//                        logger.debug("Added dependent attribute for local computation: {}", depAttr);
+//                    }
+//                }
+//            }
+//        }
+//
+//        // Шаг 2: Проверяем, есть ли "*" или пустой список
+//        if (requestedAttributes == null || requestedAttributes.isEmpty() || requestedAttributes.contains("*")) {
+//            attributesToRequest.add("*");
+//            // Добавляем зависимые атрибуты, чтобы гарантировать их наличие
+//            attributesToRequest.addAll(dependentAttributes);
+//            logger.debug("Client requested '*' or no attributes, requesting all server attributes plus dependent attributes: {}", attributesToRequest);
+//            return attributesToRequest;
+//        }
+//
+//        // Шаг 3: Фильтруем запрошенные атрибуты, исключая локальные
+//        Set<String> filteredAttributes = requestedAttributes.stream()
+//                .filter(attr -> !localAttributeNames.contains(attr.toLowerCase()))
+//                .collect(Collectors.toSet());
+//        logger.debug("Filtered requested attributes (excluding local attributes): {}", filteredAttributes);
+//
+//        // Шаг 4: Добавляем зависимые атрибуты для запрошенных локальных атрибутов
+//        for (ConfigProperties.TargetConfig.LocalAttribute attr : localAttributes) {
+//            boolean isRequested = requestedAttributes.stream()
+//                    .anyMatch(reqAttr -> reqAttr.equalsIgnoreCase(attr.getName()));
+//            if (isRequested && attr.getResultExpression() != null) {
+//                Set<String> attrNames = extractAttributeNames(attr.getResultExpression());
+//                for (String depAttr : attrNames) {
+//                    if (!depAttr.equals("*") && !filteredAttributes.contains(depAttr)) {
+//                        dependentAttributes.add(depAttr);
+//                        logger.debug("Added dependent attribute for local computation: {}", depAttr);
+//                    }
+//                }
+//            }
+//        }
+//
+//        // Шаг 5: Формируем итоговый список
+//        attributesToRequest.addAll(filteredAttributes);
+//        attributesToRequest.addAll(dependentAttributes);
+//        if (attributesToRequest.isEmpty()) {
+//            attributesToRequest.add("objectClass");
+//            logger.debug("No attributes to request after filtering, added default: objectClass");
+//        }
+//
+//        logger.debug("Final attributes to request from server: {}", attributesToRequest);
+//        return attributesToRequest;
+//    }
 
     private Set<String> extractAttributeNames(String resultExpression) {
         Set<String> attributeNames = new HashSet<>();
@@ -1556,91 +1304,513 @@ public class LdapMITM {
         long startTime = System.currentTimeMillis();
         logger.debug("Starting generateLdapFilter with originalFilter: {}", originalFilter);
 
-        List<ConfigProperties.TargetConfig.LocalAttribute> attributesList;
-        try {
-            attributesList = configProperties.getTargetConfig().getLocalAttributes();
-        } catch (Exception e) {
-            logger.error("Failed to load local attributes", e);
-            throw new RuntimeException("Failed to load local attributes", e);
-        }
-        if (attributesList.isEmpty()) {
-            logger.warn("No local attributes configured in local.ldap.target.local-attributes");
-        } else {
-            logger.debug("Loaded local attributes: {}", attributesList);
-        }
+        // Шаг 1: Загрузка конфигурации
+        List<ConfigProperties.TargetConfig.LocalAttribute> attributesList = configProperties.getTargetConfig().getLocalAttributes();
+        List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings = configProperties.getTargetConfig().getLocalDnNarrowings();
         Map<String, ConfigProperties.TargetConfig.LocalAttribute> attributeMap = attributesList.stream()
                 .collect(Collectors.toMap(attr -> attr.getName().toLowerCase(), attr -> attr));
         List<LocalDnFilterCondition> localDnFilterConditions = new ArrayList<>();
 
-        // Шаг 1: Проверка доменов
-        logger.debug("Step 1: Starting checkDomainInFilter");
-        long step1Start = System.currentTimeMillis();
-        Filter modifiedFilter;
-        try {
-            modifiedFilter = checkDomainInFilter(originalFilter, attributesList);
-        } catch (Exception e) {
-            logger.error("Error in checkDomainInFilter", e);
-            throw new RuntimeException("Error in checkDomainInFilter", e);
-        }
-        logger.debug("checkDomainInFilter took {} ms", System.currentTimeMillis() - step1Start);
-        if (modifiedFilter != null) {
-            logger.debug("checkDomainInFilter returned modified filter: {}", modifiedFilter);
-            if (isInvalidFilter(modifiedFilter)) {
-                logger.debug("Filter is invalid (contains objectClass=invalid), rejecting search");
-                return new FilterResult(Filter.createEqualityFilter("objectClass", "invalid"), Collections.emptyList(), localDnFilterConditions);
-            }
-            return new FilterResult(modifiedFilter, Collections.emptyList(), localDnFilterConditions);
+        // Шаг 2: Проверка доменов
+        Filter domainCheckedFilter = checkDomainInFilter(originalFilter, attributesList);
+        if (domainCheckedFilter != null && isInvalidFilter(domainCheckedFilter)) {
+            logger.debug("Filter rejected due to invalid domain: {}", domainCheckedFilter);
+            return new FilterResult(domainCheckedFilter, Collections.emptyList(), localDnFilterConditions);
         }
 
-        // Шаг 2: Извлечение значений
-        logger.debug("Step 2: Starting extractValueFromFilter");
-        long step2Start = System.currentTimeMillis();
-        List<Map.Entry<String, String>> filterValues;
-        try {
-            filterValues = extractValueFromFilter(originalFilter, attributeMap);
-        } catch (Exception e) {
-            logger.error("Error in extractValueFromFilter", e);
-            throw new RuntimeException("Error in extractValueFromFilter", e);
-        }
-        logger.debug("extractValueFromFilter took {} ms", System.currentTimeMillis() - step2Start);
-        if (!filterValues.isEmpty()) {
-            logger.debug("Extracted filter values: {}", filterValues);
+        // Шаг 3: Извлечение значений фильтра
+        List<Map.Entry<String, String>> filterValues = extractValueFromFilter(originalFilter, attributeMap);
+        logger.debug("Extracted filter values: {}", filterValues);
+
+        // Шаг 4: Извлечение DN-субфильтров и проверка топ-уровневого AND
+        FilterExtractionResult extractionResult = extractLocalFilters(originalFilter, localDnFilterConditions, searchBaseDN, dnNarrowings);
+        Filter serverFilter = extractionResult.getRemainingFilter();
+        boolean isInvalid = extractionResult.isRejectedDueToInvalidFilter();
+        logger.debug("Extraction result: filter={}, conditions={}, rejected={}", serverFilter, localDnFilterConditions, isInvalid);
+
+        if (isInvalid) {
+            logger.debug("Filter rejected due to invalid DN structure, conditions: {}", localDnFilterConditions);
+            return new FilterResult(Filter.createEqualityFilter("objectClass", "nonexistent"), filterValues, localDnFilterConditions);
         }
 
-        // Шаг 3: Извлечение локальных фильтров
-        logger.debug("Step 3: Starting extractLocalFilters");
-        long step3Start = System.currentTimeMillis();
-        FilterExtractionResult extractionResult;
-        try {
-            extractionResult = extractLocalFilters(originalFilter, localDnFilterConditions, searchBaseDN);
-        } catch (Exception e) {
-            logger.warn("Error in extractLocalFilters, rejecting filter: {}", originalFilter, e);
-            return new FilterResult(Filter.createEqualityFilter("objectClass", "invalid"), Collections.emptyList(), localDnFilterConditions);
-        }
-        logger.debug("extractLocalFilters took {} ms", System.currentTimeMillis() - step3Start);
-        Filter transformedFilter = extractionResult.getRemainingFilter();
-        if (transformedFilter == null) {
-            transformedFilter = Filter.createPresenceFilter("objectClass");
-            logger.debug("All filters extracted for local filtering, using (objectClass=*) for server query");
-        } else if (extractionResult.isRejectedDueToInvalidFilter()) {
-            transformedFilter = Filter.createEqualityFilter("objectClass", "invalid");
-            logger.debug("Invalid filter detected, setting transformed filter to (objectClass=invalid)");
-        }
-
-        // Шаг 4: Преобразование фильтра
-        logger.debug("Step 4: Starting transformFilter with filter: {}", transformedFilter);
-        long step4Start = System.currentTimeMillis();
-        Filter finalFilter;
-        try {
-            finalFilter = transformFilter(transformedFilter, attributeMap);
-        } catch (Exception e) {
-            logger.error("Error in transformFilter", e);
-            throw new RuntimeException("Error in transformFilter", e);
-        }
-        logger.debug("transformFilter took {} ms", System.currentTimeMillis() - step4Start);
+        // Шаг 5: Трансформация серверного фильтра
+        Filter finalFilter = serverFilter == null ? Filter.createPresenceFilter("objectClass") : transformFilter(serverFilter, attributeMap);
+        logger.debug("Final server filter: {}, conditions: {}", finalFilter, localDnFilterConditions);
 
         logger.debug("Total generateLdapFilter took {} ms", System.currentTimeMillis() - startTime);
         return new FilterResult(finalFilter, filterValues, localDnFilterConditions);
     }
+
+    private boolean isValidTopLevelFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        if (filter.getFilterType() == Filter.FILTER_TYPE_AND) {
+            boolean hasDn = false;
+            boolean hasNonDn = false;
+            for (Filter subFilter : filter.getComponents()) {
+                if (isDnFilter(subFilter, dnNarrowings)) {
+                    hasDn = true;
+                } else {
+                    hasNonDn = true;
+                }
+                if (subFilter.getFilterType() == Filter.FILTER_TYPE_AND || subFilter.getFilterType() == Filter.FILTER_TYPE_OR) {
+                    if (!isValidNestedFilter(subFilter, dnNarrowings)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } else if (filter.getFilterType() == Filter.FILTER_TYPE_OR || filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+            return isDnOnlyFilter(filter, dnNarrowings) || !isDnFilter(filter, dnNarrowings);
+        }
+        return true;
+    }
+
+    private boolean isValidNestedFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
+            boolean hasDn = false;
+            boolean hasNonDn = false;
+            for (Filter subFilter : filter.getComponents()) {
+                if (isDnFilter(subFilter, dnNarrowings)) {
+                    hasDn = true;
+                } else {
+                    hasNonDn = true;
+                }
+                if (hasDn && hasNonDn) {
+                    logger.debug("Invalid nested filter: contains both DN and non-DN subfilters: {}", filter);
+                    return false;
+                }
+                if (subFilter.getFilterType() == Filter.FILTER_TYPE_AND || subFilter.getFilterType() == Filter.FILTER_TYPE_OR) {
+                    if (!isValidNestedFilter(subFilter, dnNarrowings)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        return true;
+    }
+
+    private boolean isDnFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY || filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
+            String attributeName = filter.getAttributeName();
+            return dnNarrowings.stream().anyMatch(config -> config.getAttribute().equalsIgnoreCase(attributeName));
+        } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR || filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+            if (filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+                return isDnFilter(filter.getNOTComponent(), dnNarrowings);
+            }
+            return Arrays.stream(filter.getComponents()).anyMatch(subFilter -> isDnFilter(subFilter, dnNarrowings));
+        }
+        return false;
+    }
+
+//    private boolean isDnOnlyFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+//        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY || filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
+//            String attributeName = filter.getAttributeName();
+//            return dnNarrowings.stream().anyMatch(config -> config.getAttribute().equalsIgnoreCase(attributeName));
+//        } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR || filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+//            if (filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+//                return isDnOnlyFilter(filter.getNOTComponent(), dnNarrowings);
+//            }
+//            return Arrays.stream(filter.getComponents()).allMatch(subFilter -> isDnOnlyFilter(subFilter, dnNarrowings));
+//        }
+//        return false;
+//    }
+
+    // [NEW] Проверка, является ли фильтр исключительно DN-фильтром
+    private boolean isDnOnlyFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> localDnNarrowings) {
+        if (filter.getFilterType() == Filter.FILTER_TYPE_EQUALITY || filter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
+            String attributeName = filter.getAttributeName();
+            return localDnNarrowings.stream().anyMatch(config -> config.getAttribute().equalsIgnoreCase(attributeName));
+        } else if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR || filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+            if (filter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+                return isDnOnlyFilter(filter.getNOTComponent(), localDnNarrowings);
+            }
+            for (Filter subFilter : filter.getComponents()) {
+                if (!isDnOnlyFilter(subFilter, localDnNarrowings)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private FilterExtractionResult processTopLevelAndFilter(
+            Filter filter,
+            List<LocalDnFilterCondition> conditions,
+            String searchBaseDN,
+            List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        List<Filter> serverFilters = new ArrayList<>();
+
+        for (Filter subFilter : filter.getComponents()) {
+            FilterExtractionResult subResult = extractLocalFilters(subFilter, conditions, searchBaseDN, dnNarrowings);
+            if (subResult.isRejectedDueToInvalidFilter()) {
+                logger.debug("Subfilter rejected due to invalid DN: {}", subFilter);
+                return new FilterExtractionResult(conditions, Filter.createEqualityFilter("objectClass", "nonexistent"), true);
+            }
+            if (subResult.getRemainingFilter() != null) {
+                serverFilters.add(subResult.getRemainingFilter());
+            }
+        }
+
+        Filter serverFilter = serverFilters.isEmpty() ? Filter.createPresenceFilter("objectClass") : Filter.createANDFilter(serverFilters);
+        logger.debug("processTopLevelAndFilter: serverFilter={}, conditions={}", serverFilter, conditions);
+        return new FilterExtractionResult(conditions, serverFilter, false);
+    }
+
+
+//    // [NEW] Обработка DN-группы (OR или NOT)
+//    private LocalDnFilterCondition processDnGroup(Filter groupFilter,
+//                                                  List<ConfigProperties.TargetConfig.LocalDnNarrowing> localDnNarrowings, String searchBaseDN) {
+//        if (groupFilter.getFilterType() == Filter.FILTER_TYPE_OR) {
+//            List<String> orValues = new ArrayList<>();
+//            boolean autoBaseDn = false;
+//            String matchedAttribute = null;
+//            for (Filter subFilter : groupFilter.getComponents()) {
+//                if (subFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+//                    String attributeName = subFilter.getAttributeName();
+//                    Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = localDnNarrowings.stream()
+//                            .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+//                            .findFirst();
+//                    if (matchedConfig.isPresent()) {
+//                        String value = subFilter.getAssertionValue();
+//                        autoBaseDn = matchedConfig.get().isAutoBaseDn();
+//                        Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
+//                        if (!DnFilterValidationResult.isValid(validationResults)) {
+//                            logger.warn("Invalid DN narrowing in OR for attribute {}: {}, reasons: {}",
+//                                    attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
+//                            return new LocalDnFilterCondition(DN_FILTER_TYPE.OR, attributeName,
+//                                    Collections.emptyList(), autoBaseDn, true);
+//                        }
+//                        if (autoBaseDn && !value.toLowerCase().contains("dc=")) {
+//                            value = appendBaseDNIfMissing(value, searchBaseDN);
+//                        }
+//                        orValues.add(value);
+//                        if (matchedAttribute == null) {
+//                            matchedAttribute = attributeName;
+//                        }
+//                    }
+//                } else if (subFilter.getFilterType() == Filter.FILTER_TYPE_OR) {
+//                    LocalDnFilterCondition nestedCondition = processDnGroup(subFilter, localDnNarrowings, searchBaseDN);
+//                    if (nestedCondition != null && !nestedCondition.isInvalid()) {
+//                        orValues.addAll(nestedCondition.getValues());
+//                        autoBaseDn = nestedCondition.isAutoBaseDn();
+//                        if (matchedAttribute == null) {
+//                            matchedAttribute = nestedCondition.getAttribute();
+//                        }
+//                    } else {
+//                        return nestedCondition;
+//                    }
+//                }
+//            }
+//            if (!orValues.isEmpty()) {
+//                return new LocalDnFilterCondition(DN_FILTER_TYPE.OR, matchedAttribute, orValues, autoBaseDn);
+//            }
+//        } else if (groupFilter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+//            Filter subFilter = groupFilter.getNOTComponent();
+//            if (subFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+//                String attributeName = subFilter.getAttributeName();
+//                Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = localDnNarrowings.stream()
+//                        .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+//                        .findFirst();
+//                if (matchedConfig.isPresent()) {
+//                    String value = subFilter.getAssertionValue();
+//                    boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
+//                    Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
+//                    if (!DnFilterValidationResult.isValid(validationResults)) {
+//                        logger.warn("Invalid DN narrowing in NOT for attribute {}: {}, reasons: {}",
+//                                attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
+//                        return new LocalDnFilterCondition(DN_FILTER_TYPE.NOT, attributeName,
+//                                Collections.emptyList(), autoBaseDn, true);
+//                    }
+//                    if (autoBaseDn && !value.toLowerCase().contains("dc=")) {
+//                        value = appendBaseDNIfMissing(value, searchBaseDN);
+//                    }
+//                    return new LocalDnFilterCondition(DN_FILTER_TYPE.NOT, attributeName,
+//                            Collections.singletonList(value), autoBaseDn);
+//                }
+//            } else if (subFilter.getFilterType() == Filter.FILTER_TYPE_OR) {
+//                List<String> notOrValues = new ArrayList<>();
+//                boolean autoBaseDn = false;
+//                String matchedAttribute = null;
+//                for (Filter orSubFilter : subFilter.getComponents()) {
+//                    if (orSubFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+//                        String attributeName = orSubFilter.getAttributeName();
+//                        Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = localDnNarrowings.stream()
+//                                .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+//                                .findFirst();
+//                        if (matchedConfig.isPresent()) {
+//                            String value = orSubFilter.getAssertionValue();
+//                            autoBaseDn = matchedConfig.get().isAutoBaseDn();
+//                            Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
+//                            if (!DnFilterValidationResult.isValid(validationResults)) {
+//                                logger.warn("Invalid DN narrowing in NOT-OR for attribute {}: {}, reasons: {}",
+//                                        attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
+//                                return new LocalDnFilterCondition(DN_FILTER_TYPE.NOT, attributeName,
+//                                        Collections.emptyList(), autoBaseDn, true);
+//                            }
+//                            if (autoBaseDn && !value.toLowerCase().contains("dc=")) {
+//                                value = appendBaseDNIfMissing(value, searchBaseDN);
+//                            }
+//                            notOrValues.add(value);
+//                            if (matchedAttribute == null) {
+//                                matchedAttribute = attributeName;
+//                            }
+//                        }
+//                    }
+//                }
+//                if (!notOrValues.isEmpty()) {
+//                    return new LocalDnFilterCondition(DN_FILTER_TYPE.NOT, matchedAttribute, notOrValues, autoBaseDn);
+//                }
+//            }
+//        } else if (groupFilter.getFilterType() == Filter.FILTER_TYPE_AND) {
+//            List<LocalDnFilterCondition> nestedConditions = processNestedAnd(groupFilter, localDnNarrowings, searchBaseDN);
+//            if (nestedConditions.stream().anyMatch(LocalDnFilterCondition::isInvalid)) {
+//                return nestedConditions.stream().filter(LocalDnFilterCondition::isInvalid).findFirst().orElse(null);
+//            }
+//            if (!nestedConditions.isEmpty()) {
+//                return new LocalDnFilterCondition(DN_FILTER_TYPE.AND, "dn",
+//                        nestedConditions.stream().map(c -> c.getValues().toString()).collect(Collectors.toList()),
+//                        nestedConditions.stream().anyMatch(LocalDnFilterCondition::isAutoBaseDn));
+//            }
+//        }
+//        return null;
+//    }
+
+//    // [NEW] Обработка вложенного AND-фильтра
+//    private List<LocalDnFilterCondition> processNestedAnd(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> localDnNarrowings, String searchBaseDN) {
+//        List<LocalDnFilterCondition> conditions = new ArrayList<>();
+//        for (Filter subFilter : filter.getComponents()) {
+//            if (subFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+//                String attributeName = subFilter.getAttributeName();
+//                Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = localDnNarrowings.stream()
+//                        .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+//                        .findFirst();
+//                if (matchedConfig.isPresent()) {
+//                    String value = subFilter.getAssertionValue();
+//                    boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
+//                    Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
+//                    if (!DnFilterValidationResult.isValid(validationResults)) {
+//                        logger.warn("Invalid DN narrowing in nested AND for attribute {}: {}, reasons: {}",
+//                                attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
+//                        conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.EQUALITY, attributeName,
+//                                Collections.emptyList(), autoBaseDn, true));
+//                        return conditions;
+//                    }
+//                    if (autoBaseDn && !value.toLowerCase().contains("dc=")) {
+//                        value = appendBaseDNIfMissing(value, searchBaseDN);
+//                    }
+//                    conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.EQUALITY, attributeName,
+//                            Collections.singletonList(value), autoBaseDn));
+//                }
+//            } else if (subFilter.getFilterType() == Filter.FILTER_TYPE_PRESENCE) {
+//                String attributeName = subFilter.getAttributeName();
+//                Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = localDnNarrowings.stream()
+//                        .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+//                        .findFirst();
+//                if (matchedConfig.isPresent()) {
+//                    boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
+//                    conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.ANY, attributeName,
+//                            Collections.emptyList(), autoBaseDn));
+//                }
+//            } else if (subFilter.getFilterType() == Filter.FILTER_TYPE_OR || subFilter.getFilterType() == Filter.FILTER_TYPE_NOT) {
+//                LocalDnFilterCondition groupCondition = processDnGroup(subFilter, localDnNarrowings, searchBaseDN);
+//                if (groupCondition != null) {
+//                    conditions.add(groupCondition);
+//                }
+//            }
+//        }
+//        return conditions;
+//    }
+
+    private FilterExtractionResult processTopLevelOrFilter(
+            Filter filter,
+            List<LocalDnFilterCondition> conditions,
+            String searchBaseDN,
+            List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        List<String> orValues = new ArrayList<>();
+        boolean autoBaseDn = false;
+        String matchedAttribute = null;
+        List<Filter> serverFilters = new ArrayList<>();
+
+        for (Filter subFilter : filter.getComponents()) {
+            if (subFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+                String attributeName = subFilter.getAttributeName();
+                Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = dnNarrowings.stream()
+                        .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+                        .findFirst();
+                if (matchedConfig.isPresent()) {
+                    String value = subFilter.getAssertionValue();
+                    autoBaseDn = matchedConfig.get().isAutoBaseDn();
+                    Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
+                    if (!DnFilterValidationResult.isValid(validationResults)) {
+                        logger.warn("Invalid DN narrowing for attribute {}: {}, reasons: {}", attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
+                        conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.EQUALITY, attributeName, Collections.emptyList(), autoBaseDn, true));
+                        return new FilterExtractionResult(conditions, Filter.createEqualityFilter("objectClass", "nonexistent"), true);
+                    }
+                    String finalValue = autoBaseDn && !value.toLowerCase().contains("dc=") ? appendBaseDNIfMissing(value, searchBaseDN) : value;
+                    orValues.add(finalValue);
+                    matchedAttribute = attributeName;
+                    continue;
+                }
+            }
+            serverFilters.add(subFilter);
+        }
+
+        if (!orValues.isEmpty()) {
+            conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.OR, matchedAttribute, orValues, autoBaseDn));
+            serverFilters.add(Filter.createPresenceFilter("objectClass")); // Добавляем заглушку для серверного фильтра
+        }
+
+        Filter serverFilter = serverFilters.isEmpty() ? Filter.createPresenceFilter("objectClass") : Filter.createORFilter(serverFilters);
+        return new FilterExtractionResult(conditions, serverFilter, false);
+    }
+
+    private FilterExtractionResult processNotFilter(
+            Filter filter,
+            List<LocalDnFilterCondition> conditions,
+            String searchBaseDN,
+            List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        Filter subFilter = filter.getNOTComponent();
+        if (subFilter.getFilterType() == Filter.FILTER_TYPE_EQUALITY) {
+            String attributeName = subFilter.getAttributeName();
+            Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = dnNarrowings.stream()
+                    .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+                    .findFirst();
+            if (matchedConfig.isPresent()) {
+                String value = subFilter.getAssertionValue();
+                boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
+                Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
+                if (!DnFilterValidationResult.isValid(validationResults)) {
+                    logger.warn("Invalid DN narrowing for attribute {}: {}, reasons: {}", attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
+                    conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.NOT, attributeName, Collections.emptyList(), autoBaseDn, true));
+                    return new FilterExtractionResult(conditions, Filter.createEqualityFilter("objectClass", "nonexistent"), true);
+                }
+                String finalValue = autoBaseDn && !value.toLowerCase().contains("dc=") ? appendBaseDNIfMissing(value, searchBaseDN) : value;
+                conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.NOT, attributeName, Collections.singletonList(finalValue), autoBaseDn));
+                return new FilterExtractionResult(conditions, Filter.createPresenceFilter("objectClass"), false);
+            }
+        }
+        return new FilterExtractionResult(conditions, filter, false);
+    }
+
+    private FilterExtractionResult processEqualityFilter(
+            Filter filter,
+            List<LocalDnFilterCondition> conditions,
+            String searchBaseDN,
+            List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        String attributeName = filter.getAttributeName();
+        Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = dnNarrowings.stream()
+                .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+                .findFirst();
+        if (matchedConfig.isPresent()) {
+            String value = filter.getAssertionValue();
+            boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
+            Set<DnFilterValidationResult> validationResults = isValidDnFilter(value, autoBaseDn);
+            if (!DnFilterValidationResult.isValid(validationResults)) {
+                logger.warn("Invalid DN narrowing for attribute {}: {}, reasons: {}", attributeName, value, DnFilterValidationResult.getValidationIssues(validationResults));
+                conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.EQUALITY, attributeName, Collections.emptyList(), autoBaseDn, true));
+                logger.debug("Added invalid condition: attribute={}, value={}, invalid=true", attributeName, value);
+                return new FilterExtractionResult(conditions, Filter.createEqualityFilter("objectClass", "nonexistent"), true);
+            }
+            String finalValue = autoBaseDn && !value.toLowerCase().contains("dc=") ? appendBaseDNIfMissing(value, searchBaseDN) : value;
+            conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.EQUALITY, attributeName, Collections.singletonList(finalValue), autoBaseDn));
+            return new FilterExtractionResult(conditions, Filter.createPresenceFilter("objectClass"), false);
+        }
+        return new FilterExtractionResult(conditions, filter, false);
+    }
+
+    private FilterExtractionResult processPresenceFilter(
+            Filter filter,
+            List<LocalDnFilterCondition> conditions,
+            String searchBaseDN,
+            List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        String attributeName = filter.getAttributeName();
+        Optional<ConfigProperties.TargetConfig.LocalDnNarrowing> matchedConfig = dnNarrowings.stream()
+                .filter(config -> config.getAttribute().equalsIgnoreCase(attributeName))
+                .findFirst();
+        if (matchedConfig.isPresent()) {
+            boolean autoBaseDn = matchedConfig.get().isAutoBaseDn();
+            conditions.add(new LocalDnFilterCondition(DN_FILTER_TYPE.ANY, attributeName, Collections.emptyList(), autoBaseDn));
+            return new FilterExtractionResult(conditions, Filter.createPresenceFilter("objectClass"), false);
+        }
+        return new FilterExtractionResult(conditions, filter, false);
+    }
+
+    // [NEW] Оценка условия для фильтрации записи
+    private boolean evaluateCondition(LocalDnFilterCondition condition, SearchResultEntry entry, String baseDN) {
+        boolean conditionMatch;
+        String attributeName = condition.getAttribute().toLowerCase();
+        List<String> targetValues = new ArrayList<>();
+
+        // Используем только DN записи для всех DN-атрибутов
+        targetValues.add(entry.getDN().toLowerCase());
+        logger.debug("Using DN for condition: attribute={}, DN={}", attributeName, entry.getDN());
+
+        logger.debug("Processing condition: type={}, attribute={}, values={}, targetValues={}",
+                condition.getType(), attributeName, condition.getValues(), targetValues);
+
+        if (condition.getValues().isEmpty() && condition.getType() != DN_FILTER_TYPE.ANY) {
+            logger.warn("Empty values for condition type {}, attribute {}, rejecting condition",
+                    condition.getType(), condition.getAttribute());
+            return false;
+        }
+
+        switch (condition.getType()) {
+            case EQUALITY:
+                String value = condition.getValues().get(0).toLowerCase();
+                List<Set<DnFilterCheckResult>> resultsList = targetValues.stream()
+                        .map(target -> checkDnFilter(target, value, condition.isAutoBaseDn(), baseDN))
+                        .collect(Collectors.toList());
+                conditionMatch = resultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
+                logger.debug("checkDnFilter for EQUALITY: value={}, results={}",
+                        value, resultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
+                break;
+            case ANY:
+                conditionMatch = !targetValues.isEmpty();
+                logger.debug("checkDnFilter for ANY: attribute={}, exists={}", attributeName, conditionMatch);
+                break;
+            case OR:
+                List<Set<DnFilterCheckResult>> orResultsList = new ArrayList<>();
+                for (String orValue : condition.getValues()) {
+                    String finalValue = orValue.toLowerCase();
+                    List<Set<DnFilterCheckResult>> subResults = targetValues.stream()
+                            .map(target -> checkDnFilter(target, finalValue, condition.isAutoBaseDn(), baseDN))
+                            .collect(Collectors.toList());
+                    orResultsList.addAll(subResults);
+                }
+                conditionMatch = orResultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
+                logger.debug("checkDnFilter for OR: values={}, results={}",
+                        condition.getValues(), orResultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
+                break;
+            case AND:
+                List<Set<DnFilterCheckResult>> andResultsList = new ArrayList<>();
+                for (String andValue : condition.getValues()) {
+                    String finalValue = andValue.toLowerCase();
+                    List<Set<DnFilterCheckResult>> subResults = targetValues.stream()
+                            .map(target -> checkDnFilter(target, finalValue, condition.isAutoBaseDn(), baseDN))
+                            .collect(Collectors.toList());
+                    andResultsList.addAll(subResults);
+                }
+                conditionMatch = andResultsList.stream().allMatch(DnFilterCheckResult::isMatch);
+                logger.debug("checkDnFilter for AND: values={}, results={}",
+                        condition.getValues(), andResultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
+                break;
+            case NOT:
+                String notValue = condition.getValues().get(0).toLowerCase();
+                List<Set<DnFilterCheckResult>> notResultsList = targetValues.stream()
+                        .map(target -> checkDnFilter(target, notValue, condition.isAutoBaseDn(), baseDN))
+                        .collect(Collectors.toList());
+                conditionMatch = !notResultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
+                logger.debug("checkDnFilter for NOT: value={}, results={}",
+                        notValue, notResultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
+                break;
+            default:
+                logger.warn("Unsupported condition type: {}", condition.getType());
+                conditionMatch = false;
+                break;
+        }
+        return conditionMatch;
+    }
+
 
 }

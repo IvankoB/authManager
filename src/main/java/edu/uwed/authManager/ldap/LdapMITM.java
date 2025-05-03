@@ -889,39 +889,41 @@ public class LdapMITM {
         return dn;
     }
 
-    public Predicate<SearchResultEntry> getFilter(FilterExtractionResult extractionResult) {
+    public Predicate<SearchResultEntry> getFilter(FilterExtractionResult extractionResult, String searchBaseDN) {
+        List<LocalDnFilterCondition> localDnFilterConditions = extractionResult.getConditions();
+        logger.debug("LocalDnFilterConditions before evaluation: {}", localDnFilterConditions);
+        if (localDnFilterConditions.stream().anyMatch(LocalDnFilterCondition::isInvalid)) {
+            logger.debug("Filter rejected due to invalid structure, rejecting all entries");
+            return entry -> false;
+        }
+        if (localDnFilterConditions.isEmpty()) {
+            logger.debug("No local DN filter conditions, accepting entry by default");
+            return entry -> true; // Если условий нет, запись проходит
+        }
         return entry -> {
-            if (extractionResult.isRejectedDueToInvalidFilter()) {
-                logger.debug("Filter rejected due to invalid structure, rejecting entry DN: {}", entry.getDN());
+            String entryDN = entry.getDN();
+            if (entryDN == null) {
+                logger.debug("Entry DN is null, rejecting entry");
                 return false;
             }
-
-            List<LocalDnFilterCondition> localDnFilterConditions = extractionResult.getConditions();
-            if (localDnFilterConditions == null || localDnFilterConditions.isEmpty()) {
-                logger.debug("No local filter conditions, passing entry DN: {}", entry.getDN());
-                return true;
-            }
-
-            if (localDnFilterConditions.stream().anyMatch(LocalDnFilterCondition::isInvalid)) {
-                logger.debug("Invalid filter condition detected, rejecting entry DN: {}", entry.getDN());
-                return false;
-            }
-
-            String baseDN = configProperties.getTargetConfig().getDefaultBase();
+            logger.debug("Using DN for condition: attribute=dn, DN={}", entryDN);
+            List<String> targetValues = Collections.singletonList(entryDN.toLowerCase());
             boolean matches = true;
             for (LocalDnFilterCondition condition : localDnFilterConditions) {
-                boolean conditionMatch = evaluateCondition(condition, entry, baseDN);
-                if (condition.getType() == DN_FILTER_TYPE.OR) {
-                    matches |= conditionMatch;
-                } else {
-                    matches &= conditionMatch;
+                logger.debug("Processing condition: type={}, attribute={}, values={}, targetValues={}",
+                        condition.getType(), condition.getAttribute(), condition.getValues(), targetValues);
+                boolean conditionMatch = evaluateCondition(condition, targetValues, searchBaseDN);
+                logger.debug("Condition match result: condition={}, conditionMatch={}", condition, conditionMatch);
+                if (condition.getType() == DN_FILTER_TYPE.NOT) {
+                    conditionMatch = !conditionMatch;
                 }
-                if (!matches && condition.getType() == DN_FILTER_TYPE.AND) {
+                matches = matches && conditionMatch;
+                logger.debug("Updated matches: matches={}", matches);
+                if (!matches) {
                     break;
                 }
             }
-
-            logger.debug("Entry DN {} local filter conditions: {}", entry.getDN(), matches ? "matches" : "does not match");
+            logger.debug("Entry DN {} local filter conditions: {}", entryDN, matches ? "matches" : "does not match");
             return matches;
         };
     }
@@ -1736,38 +1738,14 @@ public class LdapMITM {
         return new FilterExtractionResult(conditions, filter, false);
     }
 
-    // [NEW] Оценка условия для фильтрации записи
-    private boolean evaluateCondition(LocalDnFilterCondition condition, SearchResultEntry entry, String baseDN) {
+    private boolean evaluateCondition(LocalDnFilterCondition condition, List<String> targetValues, String baseDN) {
         boolean conditionMatch;
-        String attributeName = condition.getAttribute().toLowerCase();
-        List<String> targetValues = new ArrayList<>();
-
-        // Используем только DN записи для всех DN-атрибутов
-        targetValues.add(entry.getDN().toLowerCase());
-        logger.debug("Using DN for condition: attribute={}, DN={}", attributeName, entry.getDN());
-
-        logger.debug("Processing condition: type={}, attribute={}, values={}, targetValues={}",
-                condition.getType(), attributeName, condition.getValues(), targetValues);
-
-        if (condition.getValues().isEmpty() && condition.getType() != DN_FILTER_TYPE.ANY) {
-            logger.warn("Empty values for condition type {}, attribute {}, rejecting condition",
-                    condition.getType(), condition.getAttribute());
-            return false;
-        }
-
         switch (condition.getType()) {
             case EQUALITY:
-                String value = condition.getValues().get(0).toLowerCase();
                 List<Set<DnFilterCheckResult>> resultsList = targetValues.stream()
-                        .map(target -> checkDnFilter(target, value, condition.isAutoBaseDn(), baseDN))
+                        .map(target -> checkDnFilter(target, condition.getValues().get(0), condition.isAutoBaseDn(), baseDN))
                         .collect(Collectors.toList());
-                conditionMatch = resultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
-                logger.debug("checkDnFilter for EQUALITY: value={}, results={}",
-                        value, resultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
-                break;
-            case ANY:
-                conditionMatch = !targetValues.isEmpty();
-                logger.debug("checkDnFilter for ANY: attribute={}, exists={}", attributeName, conditionMatch);
+                conditionMatch = resultsList.stream().anyMatch(results -> results.contains(DnFilterCheckResult.MATCH));
                 break;
             case OR:
                 List<Set<DnFilterCheckResult>> orResultsList = new ArrayList<>();
@@ -1778,39 +1756,31 @@ public class LdapMITM {
                             .collect(Collectors.toList());
                     orResultsList.addAll(subResults);
                 }
-                conditionMatch = orResultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
-                logger.debug("checkDnFilter for OR: values={}, results={}",
-                        condition.getValues(), orResultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
-                break;
-            case AND:
-                List<Set<DnFilterCheckResult>> andResultsList = new ArrayList<>();
-                for (String andValue : condition.getValues()) {
-                    String finalValue = andValue.toLowerCase();
-                    List<Set<DnFilterCheckResult>> subResults = targetValues.stream()
-                            .map(target -> checkDnFilter(target, finalValue, condition.isAutoBaseDn(), baseDN))
-                            .collect(Collectors.toList());
-                    andResultsList.addAll(subResults);
+                logger.debug("checkDnFilter for OR: values={}, results={}", condition.getValues(),
+                        orResultsList.stream().map(EnumSet::copyOf).collect(Collectors.toList()));
+                conditionMatch = orResultsList.stream().anyMatch(results -> results.contains(DnFilterCheckResult.MATCH));
+                if (!conditionMatch) {
+                    logger.debug("OR condition evaluated: no MATCH found, checking for VALUE_MISMATCH");
+                    boolean allValueMismatch = orResultsList.stream().allMatch(results -> results.contains(DnFilterCheckResult.VALUE_MISMATCH));
+                    if (allValueMismatch) {
+                        logger.debug("All OR conditions resulted in VALUE_MISMATCH, setting conditionMatch=false");
+                        conditionMatch = false;
+                    }
                 }
-                conditionMatch = andResultsList.stream().allMatch(DnFilterCheckResult::isMatch);
-                logger.debug("checkDnFilter for AND: values={}, results={}",
-                        condition.getValues(), andResultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
+                logger.debug("OR condition match: conditionMatch={}", conditionMatch);
                 break;
             case NOT:
-                String notValue = condition.getValues().get(0).toLowerCase();
                 List<Set<DnFilterCheckResult>> notResultsList = targetValues.stream()
-                        .map(target -> checkDnFilter(target, notValue, condition.isAutoBaseDn(), baseDN))
+                        .map(target -> checkDnFilter(target, condition.getValues().get(0), condition.isAutoBaseDn(), baseDN))
                         .collect(Collectors.toList());
-                conditionMatch = !notResultsList.stream().anyMatch(DnFilterCheckResult::isMatch);
-                logger.debug("checkDnFilter for NOT: value={}, results={}",
-                        notValue, notResultsList.stream().map(DnFilterCheckResult::getCheckIssues).collect(Collectors.joining("; ")));
+                conditionMatch = notResultsList.stream().noneMatch(results -> results.contains(DnFilterCheckResult.MATCH));
                 break;
             default:
-                logger.warn("Unsupported condition type: {}", condition.getType());
+                logger.warn("Unsupported DN filter type: {}", condition.getType());
                 conditionMatch = false;
-                break;
         }
+        logger.debug("evaluateCondition final result: condition={}, conditionMatch={}", condition, conditionMatch);
         return conditionMatch;
     }
-
 
 }

@@ -78,7 +78,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (objectClass=person)");
         assertEquals("Filter should remain unchanged","(objectClass=person)", result.getFilter().toString());
@@ -99,7 +99,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (|(dn=ou=IT)(dn=ou=Staff))");
         assertEquals("Filter should exclude DN conditions", "(&(objectClass=person)(objectClass=*))", result.getFilter().toString());
@@ -117,7 +117,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (dn=ou=IT)");
         assertEquals("Filter should exclude DN condition", "(&(objectClass=person)(objectClass=*))", result.getFilter().toString());
@@ -140,7 +140,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertFalse(predicate.test(entry), "Entry should NOT match (|(dn=ou=ITt)(dn=ou=ITz))");
         assertTrue(result.getFilter().toString().contains("sAMAccountName=ivano"), "Filter should transform postalAddress");
@@ -159,7 +159,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertFalse(predicate.test(entry), "Entry should NOT match (dn=ou=ITt)");
         assertTrue(result.getFilter().toString().contains("sAMAccountName=ivano"), "Filter should transform postalAddress");
@@ -178,7 +178,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (dn=ou=IT)");
         assertTrue(result.getFilter().toString().contains("sAMAccountName=ivano"), "Filter should transform postalAddress");
@@ -197,7 +197,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertFalse(predicate.test(entry), "Entry should NOT match (dn=ouZZZ=IT)");
 
@@ -223,7 +223,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (|(distinguishedName=ou=IT))");
         assertTrue(result.getFilter().toString().contains("sAMAccountName=ivano"), "Filter should transform postalAddress");
@@ -245,7 +245,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (|(distinguishedName=ou=IT)(dn=ou=ITz))");
         assertTrue(result.getFilter().toString().contains("sAMAccountName=ivano"), "Filter should transform postalAddress");
@@ -266,7 +266,7 @@ public class LdapMITMTest {
                 result.getFilter(),
                 result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
         );
-        Predicate<SearchResultEntry> predicate = ldapMITMWithNoFilters.getFilter(extractionResult);
+        Predicate<SearchResultEntry> predicate = ldapMITMWithNoFilters.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should pass when no local filters are configured");
         assertEquals("Filter should remain unchanged", "(objectClass=person)", result.getFilter().toString());

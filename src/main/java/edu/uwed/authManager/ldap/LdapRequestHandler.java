@@ -176,7 +176,7 @@ public class LdapRequestHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
                                 LdapProxyStreamingSearchResultListener listener = new LdapProxyStreamingSearchResultListener(
                                         ctx,
-                                        ldapMITM.getFilter(extractionResult),
+                                        ldapMITM.getFilter(extractionResult, searchRequestOp.getBaseDN()),
                                         ldapMITM.getEntryProcessor(requestedAttributes, filterValues),
                                         clientMessageId,
                                         pool, conn

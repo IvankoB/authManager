@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>edu.uwed</groupId>
 	<artifactId>authManager</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+	<version>1.0.1-SNAPSHOT</version>
 	<name>authManager</name>
 	<description>UWED&apos;s authentication manager</description>
 	<url/>
@@ -158,6 +158,13 @@
 						</exclude>
 					</excludes>
 				</configuration>
+				<executions>
+					<execution>
+						<goals>
+							<goal>repackage</goal>
+						</goals>
+					</execution>
+				</executions>
 			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>

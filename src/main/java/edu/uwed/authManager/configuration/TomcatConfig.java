@@ -12,7 +12,7 @@ public class TomcatConfig {
     @Bean
     public WebServerFactoryCustomizer<TomcatServletWebServerFactory> tomcatCustomizer() {
         return factory -> {
-            System.out.println("TomcatConfig: Customizer applied, using server.ssl.bundle=httpsApi");
+            System.out.println("TomcatConfig: Customizer applied, using the assigned server.ssl.bundle");
         };
     }
 }

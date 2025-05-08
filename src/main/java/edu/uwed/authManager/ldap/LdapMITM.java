@@ -914,6 +914,42 @@ public class LdapMITM {
                         condition.getType(), condition.getAttribute(), condition.getValues(), targetValues);
                 boolean conditionMatch = evaluateCondition(condition, targetValues, searchBaseDN);
                 logger.debug("Condition match result: condition={}, conditionMatch={}", condition, conditionMatch);
+                // Убрана инверсия для NOT, так как она уже выполнена в evaluateCondition
+                matches = matches && conditionMatch;
+                logger.debug("Updated matches: matches={}", matches);
+                if (!matches) {
+                    break;
+                }
+            }
+            logger.debug("Entry DN {} local filter conditions: {}", entryDN, matches ? "matches" : "does not match");
+            return matches;
+        };
+    }
+    public Predicate<SearchResultEntry> getFilter01(FilterExtractionResult extractionResult, String searchBaseDN) {
+        List<LocalDnFilterCondition> localDnFilterConditions = extractionResult.getConditions();
+        logger.debug("LocalDnFilterConditions before evaluation: {}", localDnFilterConditions);
+        if (localDnFilterConditions.stream().anyMatch(LocalDnFilterCondition::isInvalid)) {
+            logger.debug("Filter rejected due to invalid structure, rejecting all entries");
+            return entry -> false;
+        }
+        if (localDnFilterConditions.isEmpty()) {
+            logger.debug("No local DN filter conditions, accepting entry by default");
+            return entry -> true; // Если условий нет, запись проходит
+        }
+        return entry -> {
+            String entryDN = entry.getDN();
+            if (entryDN == null) {
+                logger.debug("Entry DN is null, rejecting entry");
+                return false;
+            }
+            logger.debug("Using DN for condition: attribute=dn, DN={}", entryDN);
+            List<String> targetValues = Collections.singletonList(entryDN.toLowerCase());
+            boolean matches = true;
+            for (LocalDnFilterCondition condition : localDnFilterConditions) {
+                logger.debug("Processing condition: type={}, attribute={}, values={}, targetValues={}",
+                        condition.getType(), condition.getAttribute(), condition.getValues(), targetValues);
+                boolean conditionMatch = evaluateCondition(condition, targetValues, searchBaseDN);
+                logger.debug("Condition match result: condition={}, conditionMatch={}", condition, conditionMatch);
                 if (condition.getType() == DN_FILTER_TYPE.NOT) {
                     conditionMatch = !conditionMatch;
                 }
@@ -1366,7 +1402,7 @@ public class LdapMITM {
         return true;
     }
 
-    private boolean isValidNestedFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+    private boolean isValidNestedFilter01(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
         if (filter.getFilterType() == Filter.FILTER_TYPE_AND || filter.getFilterType() == Filter.FILTER_TYPE_OR) {
             boolean hasDn = false;
             boolean hasNonDn = false;
@@ -1378,6 +1414,40 @@ public class LdapMITM {
                 }
                 if (hasDn && hasNonDn) {
                     logger.debug("Invalid nested filter: contains both DN and non-DN subfilters: {}", filter);
+                    return false;
+                }
+                if (subFilter.getFilterType() == Filter.FILTER_TYPE_AND || subFilter.getFilterType() == Filter.FILTER_TYPE_OR) {
+                    if (!isValidNestedFilter(subFilter, dnNarrowings)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        return true;
+    }
+
+    private boolean isValidNestedFilter(Filter filter, List<ConfigProperties.TargetConfig.LocalDnNarrowing> dnNarrowings) {
+        if (filter.getFilterType() == Filter.FILTER_TYPE_AND) {
+            for (Filter subFilter : filter.getComponents()) {
+                if (subFilter.getFilterType() == Filter.FILTER_TYPE_AND || subFilter.getFilterType() == Filter.FILTER_TYPE_OR) {
+                    if (!isValidNestedFilter(subFilter, dnNarrowings)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } else if (filter.getFilterType() == Filter.FILTER_TYPE_OR) {
+            boolean hasDn = false;
+            boolean hasNonDn = false;
+            for (Filter subFilter : filter.getComponents()) {
+                if (isDnFilter(subFilter, dnNarrowings)) {
+                    hasDn = true;
+                } else {
+                    hasNonDn = true;
+                }
+                if (hasDn && hasNonDn) {
+                    logger.debug("Invalid nested OR filter: contains both DN and non-DN subfilters: {}", filter);
                     return false;
                 }
                 if (subFilter.getFilterType() == Filter.FILTER_TYPE_AND || subFilter.getFilterType() == Filter.FILTER_TYPE_OR) {

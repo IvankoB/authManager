@@ -14,9 +14,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Predicate;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.springframework.test.util.AssertionErrors.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 
 import edu.uwed.authManager.ldap.LdapMITM.*;
 import edu.uwed.authManager.configuration.ConfigProperties;
@@ -69,6 +67,14 @@ public class LdapMITMTest {
         ldapMITM = new LdapMITM(configProperties);
     }
 
+//    @Test
+//    public void testStringComparison() {
+//        String expected = "(objectClass=nonexistent)";
+//        String actual = "(objectClass=nonexistent)";
+//        assertEquals(expected, actual, "Strings should be equal");
+//        assertNotEquals(expected, actual, "Strings should not be equal"); // Должно провалиться
+//    }
+
     @Test
     public void testObjectClassPerson() {
         Filter filter = Filter.createEqualityFilter("objectClass", "person");
@@ -81,7 +87,7 @@ public class LdapMITMTest {
         Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (objectClass=person)");
-        assertEquals("Filter should remain unchanged","(objectClass=person)", result.getFilter().toString());
+        assertEquals("(objectClass=person)", result.getFilter().toString(), "Filter should remain unchanged");
     }
 
     @Test
@@ -102,7 +108,7 @@ public class LdapMITMTest {
         Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (|(dn=ou=IT)(dn=ou=Staff))");
-        assertEquals("Filter should exclude DN conditions", "(&(objectClass=person)(objectClass=*))", result.getFilter().toString());
+        assertEquals( "(&(objectClass=person)(objectClass=*))", result.getFilter().toString(),"Filter should exclude DN conditions");
     }
 
     @Test
@@ -120,7 +126,7 @@ public class LdapMITMTest {
         Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should match (dn=ou=IT)");
-        assertEquals("Filter should exclude DN condition", "(&(objectClass=person)(objectClass=*))", result.getFilter().toString());
+        assertEquals( "(&(objectClass=person)(objectClass=*))", result.getFilter().toString(),"Filter should exclude DN condition");
     }
 
     @Ignore("Test depends on real server data (specific OUs), excluding for now")
@@ -185,6 +191,68 @@ public class LdapMITMTest {
     }
 
     @Test
+    public void testPostalAddressWithDnOuNotIT() {
+        Filter filter = Filter.createANDFilter(
+                Filter.createEqualityFilter("postalAddress", "ivano@uwed.ac.uz"),
+                Filter.createEqualityFilter("objectClass", "person"),
+                Filter.createNOTFilter(Filter.createEqualityFilter("dn", "ou=IT"))
+        );
+        LdapMITM.FilterResult result = ldapMITM.generateLdapFilter(filter, baseDN);
+        LdapMITM.FilterExtractionResult extractionResult = new LdapMITM.FilterExtractionResult(
+                result.getLocalDnFilterConditions(),
+                result.getFilter(),
+                result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
+        );
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
+
+        assertFalse(predicate.test(entry), "Entry should NOT match (!(dn=ou=IT))");
+        assertTrue(result.getFilter().toString().contains("sAMAccountName=ivano"), "Filter should transform postalAddress");
+    }
+    @Test
+    public void testPostalAddressWithDnOuNotITorOuIt() {
+        Filter filter = Filter.createANDFilter(
+                Filter.createEqualityFilter("postalAddress", "ivano@uwed.ac.uz"),
+                Filter.createEqualityFilter("objectClass", "person"),
+                Filter.createORFilter(
+                    Filter.createNOTFilter(Filter.createEqualityFilter("dn", "ou=IT")),
+                    Filter.createEqualityFilter("distinguishedName", "ou=IT")
+                )
+        );
+        LdapMITM.FilterResult result = ldapMITM.generateLdapFilter(filter, baseDN);
+        LdapMITM.FilterExtractionResult extractionResult = new LdapMITM.FilterExtractionResult(
+                result.getLocalDnFilterConditions(),
+                result.getFilter(),
+                result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
+        );
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
+
+        assertTrue(predicate.test(entry), "Entry should match (|(!(dn=ou=IT))(distinguishedName=ou=IT))");
+        assertTrue(result.getFilter().toString().contains("sAMAccountName=ivano"), "Filter should transform postalAddress");
+    }
+
+    @Test
+    public void testPostalAddressWithDnOuNotITorOuAny() {
+        Filter filter = Filter.createANDFilter(
+                Filter.createEqualityFilter("postalAddress", "ivano@uwed.ac.uz"),
+                Filter.createEqualityFilter("objectClass", "person"),
+                Filter.createORFilter(
+                        Filter.createNOTFilter(Filter.createEqualityFilter("dn", "ou=IT")),
+                        Filter.createEqualityFilter("dn", "ou=*")
+                )
+        );
+        LdapMITM.FilterResult result = ldapMITM.generateLdapFilter(filter, baseDN);
+        LdapMITM.FilterExtractionResult extractionResult = new LdapMITM.FilterExtractionResult(
+                result.getLocalDnFilterConditions(),
+                result.getFilter(),
+                result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
+        );
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
+
+        assertTrue(predicate.test(entry), "Entry should match (|(!(dn=ou=IT))(dn=ou=*))");
+        assertTrue(result.getFilter().toString().contains("sAMAccountName=ivano"), "Filter should transform postalAddress");
+    }
+
+    @Test
     public void testPostalAddressWithDnOuZZZIT() {
         Filter filter = Filter.createANDFilter(
                 Filter.createEqualityFilter("postalAddress", "ivano@uwed.ac.uz"),
@@ -204,8 +272,7 @@ public class LdapMITMTest {
         // Добавим отладочный лог
         String filterString = result.getFilter().toString();
         System.out.println("Filter toString before assert: " + filterString);
-
-        assertEquals("Filter should be non-matching", "(objectClass=nonexistent)", filterString);
+        assertEquals( "(objectClass=nonexistent)", filterString,"Filter should be non-matching");
     }
 
      @Test
@@ -269,6 +336,81 @@ public class LdapMITMTest {
         Predicate<SearchResultEntry> predicate = ldapMITMWithNoFilters.getFilter(extractionResult,baseDN);
 
         assertTrue(predicate.test(entry), "Entry should pass when no local filters are configured");
-        assertEquals("Filter should remain unchanged", "(objectClass=person)", result.getFilter().toString());
+        assertEquals("(objectClass=person)", result.getFilter().toString(),"Filter should remain unchanged");
+    }
+
+@Test
+public void testSamAccountsOfEnabledPersonsOfStaffOrIt() {
+    Filter filter = Filter.createANDFilter(
+            Filter.createEqualityFilter("sAMAccountName", "*"),
+            Filter.createANDFilter(
+                Filter.createEqualityFilter("objectClass", "person"),
+                Filter.createORFilter(
+                    Filter.createEqualityFilter("dn", "ou=IT"),
+                    Filter.createEqualityFilter("dn", "ou=Staff")
+                )
+            )
+    );
+    FilterResult result = ldapMITM.generateLdapFilter(filter, baseDN);
+    FilterExtractionResult extractionResult = new FilterExtractionResult(
+            result.getLocalDnFilterConditions(),
+            result.getFilter(),
+            result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
+    );
+    Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
+
+    assertTrue(predicate.test(entry), "Entry should match (|(dn=ou=IT)(dn=ou=Staff))");
+    String normalizedFilter = result.getFilter().toString().replace("\\2a", "*");
+    assertTrue(normalizedFilter.contains("sAMAccountName=*"), "Filter should pass '*'");
+}
+
+@Test
+public void testSamAccountsOrPersonsOfStaffOrIt() {
+    Filter filter = Filter.createORFilter(
+            Filter.createEqualityFilter("sAMAccountName", "*"),
+            Filter.createANDFilter(
+                    Filter.createEqualityFilter("objectClass", "person"),
+                    Filter.createORFilter(
+                            Filter.createEqualityFilter("dn", "ou=IT"),
+                            Filter.createEqualityFilter("dn", "ou=Staff")
+                    )
+            )
+    );
+    FilterResult result = ldapMITM.generateLdapFilter(filter, baseDN);
+    FilterExtractionResult extractionResult = new FilterExtractionResult(
+            result.getLocalDnFilterConditions(),
+            result.getFilter(),
+            result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
+    );
+    Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
+
+    assertTrue(predicate.test(entry), "Entry should match (|(dn=ou=IT)(dn=ou=Staff))");
+    //assertTrue(extractionResult.isRejectedDueToInvalidFilter(), "Filter should be marked as invalid due to OR with local and server filtering");
+    assertEquals( "(objectClass=nonexistent)", result.getFilter().toString(), "Filter should not pass because of OR with local filtering");
+}
+
+    @Test
+    public void testSamAccountsOfPersonsOrStaffOrIt() {
+        Filter filter = Filter.createANDFilter(
+                Filter.createEqualityFilter("sAMAccountName", "*"),
+                Filter.createORFilter(
+                        Filter.createEqualityFilter("objectClass", "person"),
+                        Filter.createORFilter(
+                                Filter.createEqualityFilter("dn", "ou=IT"),
+                                Filter.createEqualityFilter("dn", "ou=Staff")
+                        )
+                )
+        );
+        FilterResult result = ldapMITM.generateLdapFilter(filter, baseDN);
+        FilterExtractionResult extractionResult = new FilterExtractionResult(
+                result.getLocalDnFilterConditions(),
+                result.getFilter(),
+                result.getLocalDnFilterConditions().stream().anyMatch(LdapMITM.LocalDnFilterCondition::isInvalid)
+        );
+        Predicate<SearchResultEntry> predicate = ldapMITM.getFilter(extractionResult,baseDN);
+
+        assertTrue(predicate.test(entry), "Entry should match (|(dn=ou=IT)(dn=ou=Staff))");
+        //assertTrue(extractionResult.isRejectedDueToInvalidFilter(), "Filter should be marked as invalid due to OR with local and server filtering");
+        assertEquals( "(objectClass=nonexistent)", result.getFilter().toString(),"Filter should not pass because of OR with local filtering");
     }
 }
